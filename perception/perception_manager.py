@@ -2,11 +2,10 @@ from typing import Any
 
 import numpy as np
 
-<<<<<<< HEAD
-=======
-from apriltag_detector import AprilTagDetector
-from camera_manager import CameraManager
->>>>>>> dad59d1 (upadte tha changes)
+from core.application_state import ApplicationState
+from perception.apriltag_detector import AprilTagDetector
+from perception.camera_manager import CameraManager
+
 
 
 class PerceptionManager:
