@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 
+from core.application_state import ApplicationState
 from perception.perception_manager import PerceptionManager
 
 
@@ -37,7 +38,8 @@ def draw_detection(frame: np.ndarray, detection: dict) -> None:
 
 def main() -> None:
     """Run a live perception test: camera frame to AprilTag detections."""
-    perception_manager = PerceptionManager()
+    application_state = ApplicationState()
+    perception_manager = PerceptionManager(application_state)
 
     if not perception_manager.initialize():
         print("PerceptionManager failed to initialize camera.")

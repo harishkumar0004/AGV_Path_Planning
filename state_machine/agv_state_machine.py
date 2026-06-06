@@ -6,9 +6,14 @@ from state_machine.states import AGVState
 class AGVStateMachine:
     """Controls high-level AGV state transitions and action selection."""
 
-    def __init__(self) -> None:
-        """Create a new state machine starting in the IDLE state."""
-        self.current_state = AGVState.IDLE
+    def __init__(self, initial_state: AGVState = AGVState.IDLE) -> None:
+        """
+        Create a new state machine.
+
+        Args:
+            initial_state: State used when the machine starts.
+        """
+        self.current_state = initial_state
 
     def handle_event(self, event: AGVEvent) -> AGVAction:
         """
@@ -42,6 +47,21 @@ class AGVStateMachine:
         ):
             self.current_state = AGVState.TURNING
             return AGVAction.TURN_LEFT
+
+        # SEARCHING + TAG_DETECTED -> ALIGNING + NO_ACTION
+        if self.current_state == AGVState.SEARCHING and event == AGVEvent.TAG_DETECTED:
+            self.current_state = AGVState.ALIGNING
+            return AGVAction.NO_ACTION
+
+        # ALIGNING + TAG_LOST -> SEARCHING + NO_ACTION
+        if self.current_state == AGVState.ALIGNING and event == AGVEvent.TAG_LOST:
+            self.current_state = AGVState.SEARCHING
+            return AGVAction.NO_ACTION
+
+        # ALIGNING + TAG_CHANGED -> ALIGNING + NO_ACTION
+        if self.current_state == AGVState.ALIGNING and event == AGVEvent.TAG_CHANGED:
+            self.current_state = AGVState.ALIGNING
+            return AGVAction.NO_ACTION
 
         # Unsupported event/state combinations do not change the state.
         return AGVAction.NO_ACTION

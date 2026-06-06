@@ -15,3 +15,9 @@ class AGVState(Enum):
 
     # The AGV has detected a problem and should stop safely.
     ERROR = auto()
+
+    # The AGV is looking for an AprilTag.
+    SEARCHING = auto()
+
+    # The AGV has found an AprilTag and is ready for alignment logic later.
+    ALIGNING = auto()

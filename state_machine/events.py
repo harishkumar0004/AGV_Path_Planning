@@ -15,3 +15,12 @@ class AGVEvent(Enum):
 
     # Notification that an error has been detected.
     ERROR_DETECTED = auto()
+
+    # Notification that an AprilTag became visible.
+    TAG_DETECTED = auto()
+
+    # Notification that the visible AprilTag disappeared.
+    TAG_LOST = auto()
+
+    # Notification that the visible AprilTag ID changed.
+    TAG_CHANGED = auto()
