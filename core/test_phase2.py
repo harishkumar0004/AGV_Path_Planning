@@ -1,7 +1,7 @@
 import unittest
 
 from state_machine.actions import AGVAction
-from core.agv_application import AGVApplication
+from controller.agv_application import AGVApplication
 from state_machine.events import AGVEvent
 from state_machine.states import AGVState
 
