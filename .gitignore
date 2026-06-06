@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual environments
+venv/
+agv2/
+
+# VSCode
+.vscode/
+
+# Linux
+*.swp
+
+# Generated files
+*.h264
+*.avi
+*.mp4
+*.jpg
+*.png
+
+# Logs
+logs/
