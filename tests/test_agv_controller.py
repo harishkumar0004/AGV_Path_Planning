@@ -10,7 +10,7 @@ def main() -> None:
         return
 
     try:
-        while True:
+        while controller.is_initialized:
             # Each update runs: perception -> events -> state machine.
             controller.update()
     except KeyboardInterrupt:
