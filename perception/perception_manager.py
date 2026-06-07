@@ -7,7 +7,6 @@ from perception.apriltag_detector import AprilTagDetector
 from perception.camera_manager import CameraManager
 
 
-
 class PerceptionManager:
     """Single entry point for the AGV perception layer."""
 

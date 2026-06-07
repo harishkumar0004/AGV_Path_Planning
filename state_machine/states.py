@@ -21,3 +21,9 @@ class AGVState(Enum):
 
     # The AGV has found an AprilTag and is ready for alignment logic later.
     ALIGNING = auto()
+
+    # The AGV is moving toward the detected target.
+    APPROACHING = auto()
+
+    # The AGV is stopped and should not move.
+    STOPPED = auto()
