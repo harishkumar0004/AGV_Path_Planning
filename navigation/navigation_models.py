@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from control.motor_commands import MotorCommand
+from navigation.motion_commands import MotionCommand
 
 
 @dataclass
@@ -10,5 +10,5 @@ class AlignmentResult:
     # Horizontal difference between tag center and camera center.
     error_x: float
 
-    # Suggested motor command for correcting the alignment.
-    action: MotorCommand
+    # Suggested motion command for correcting the alignment.
+    action: MotionCommand

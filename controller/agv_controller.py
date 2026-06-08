@@ -4,8 +4,12 @@ import cv2
 import numpy as np
 
 from core.application_state import ApplicationState
+from control.serial_commands import SerialCommand
+from control.serial_motor_controller import SerialMotorController
 from events.event_generator import EventGenerator
 from events.event_types import PerceptionEvent
+from navigation.alignment_controller import AlignmentController
+from navigation.motion_commands import MotionCommand
 from perception.perception_manager import PerceptionManager
 from state_machine.agv_state_machine import AGVStateMachine
 from state_machine.events import AGVEvent
@@ -21,6 +25,9 @@ class AGVController:
         self.perception_manager = PerceptionManager(self.application_state)
         self.event_generator = EventGenerator(self.application_state)
         self.state_machine = AGVStateMachine(initial_state=AGVState.SEARCHING)
+        self.alignment_controller = AlignmentController(center_tolerance_px=40.0)
+        self.serial_motor_controller = SerialMotorController()
+        self.last_motion_command: MotionCommand | None = None
         self.is_initialized = False
         self.window_name = "AGV Controller"
 
@@ -33,6 +40,11 @@ class AGVController:
         """
         camera_ready = self.perception_manager.initialize()
         if not camera_ready:
+            return False
+
+        serial_ready = self.serial_motor_controller.connect()
+        if not serial_ready:
+            self.perception_manager.release()
             return False
 
         self.application_state.current_state = self.state_machine.current_state
@@ -73,11 +85,13 @@ class AGVController:
                 print(f"{previous_state.name} -> {current_state.name}")
                 print(f"Current State: {current_state.name}")
 
+        self._send_alignment_command()
         self._display_camera_frame(detections)
 
     def shutdown(self) -> None:
         """Release controller resources safely."""
         self.perception_manager.release()
+        self.serial_motor_controller.disconnect()
         cv2.destroyAllWindows()
         self.is_initialized = False
 
@@ -98,6 +112,49 @@ class AGVController:
             return AGVEvent.TAG_LOST
 
         return AGVEvent.TAG_CHANGED
+
+    def _send_alignment_command(self) -> None:
+        """Convert latest perception state into a serial motion command."""
+        frame = self.perception_manager.last_frame
+        perception = self.application_state.perception
+
+        if frame is None:
+            motion_command = MotionCommand.STOP
+        else:
+            frame_center_x = frame.shape[1] / 2
+            tag_center_x = perception.center_x if perception.tag_visible else None
+            motion_command = self.alignment_controller.decide(
+                frame_center_x=frame_center_x,
+                tag_center_x=tag_center_x,
+            )
+
+        if motion_command == self.last_motion_command:
+            return
+
+        serial_command = self._to_serial_command(motion_command)
+        self.serial_motor_controller.send_command(serial_command)
+        self.last_motion_command = motion_command
+
+    def _to_serial_command(self, motion_command: MotionCommand) -> SerialCommand:
+        """
+        Convert navigation motion command into serial command text.
+
+        Args:
+            motion_command: Command produced by AlignmentController.
+
+        Returns:
+            Matching SerialCommand for the ESP32.
+        """
+        if motion_command == MotionCommand.FORWARD:
+            return SerialCommand.FORWARD
+
+        if motion_command == MotionCommand.LEFT:
+            return SerialCommand.LEFT
+
+        if motion_command == MotionCommand.RIGHT:
+            return SerialCommand.RIGHT
+
+        return SerialCommand.STOP
 
     def _display_camera_frame(self, detections: list[dict[str, Any]]) -> None:
         """
