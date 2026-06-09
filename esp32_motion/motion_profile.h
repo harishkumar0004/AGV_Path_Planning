@@ -12,8 +12,7 @@ public:
   void configure(
     uint32_t total_steps,
     float max_frequency_hz,
-    float acceleration_hz_per_sec,
-    float min_start_frequency_hz = 1.0
+    float acceleration_hz_per_sec
   );
   MotionProfileState calculate(uint32_t current_step_count) const;
   bool isTriangular() const;
@@ -26,7 +25,6 @@ private:
   uint32_t _deceleration_steps;
   float _max_frequency_hz;
   float _acceleration_hz_per_sec;
-  float _min_start_frequency_hz;
   bool _triangular;
 
   float calculateFrequencyForStep(uint32_t phase_step) const;

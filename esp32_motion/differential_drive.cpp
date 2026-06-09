@@ -64,11 +64,6 @@ bool DifferentialDrive::isRunning() const {
 }
 
 
-bool DifferentialDrive::isComplete() const {
-  return _left_motor.isComplete() && _right_motor.isComplete();
-}
-
-
 uint32_t DifferentialDrive::getStepCount() const {
   uint32_t left_steps = _left_motor.getStepCount();
   uint32_t right_steps = _right_motor.getStepCount();

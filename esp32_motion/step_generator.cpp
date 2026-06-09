@@ -37,7 +37,6 @@ void StepGenerator::begin() {
   _timer = timerBegin(1000000);
   timerAttachInterruptArg(_timer, &StepGenerator::onTimer, this);
   timerAlarm(_timer, frequencyToHalfPeriodMicros(_frequency_hz), true, 0);
-  timerStop(_timer);
 }
 
 
@@ -78,13 +77,7 @@ void StepGenerator::start(uint32_t target_steps) {
   _step_pin_high = false;
   portEXIT_CRITICAL(&_timer_mux);
 
-  digitalWrite(_step_pin, LOW);
   enable();
-
-  if (_timer != nullptr) {
-    timerWrite(_timer, 0);
-    timerStart(_timer);
-  }
 }
 
 
@@ -94,10 +87,6 @@ void StepGenerator::stop() {
   _complete = true;
   _step_pin_high = false;
   portEXIT_CRITICAL(&_timer_mux);
-
-  if (_timer != nullptr) {
-    timerStop(_timer);
-  }
 
   digitalWrite(_step_pin, LOW);
   disable();

@@ -20,7 +20,6 @@ public:
   void setFrequency(float frequency_hz);
 
   bool isRunning() const;
-  bool isComplete() const;
   uint32_t getStepCount() const;
   uint32_t getTargetSteps() const;
 

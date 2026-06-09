@@ -8,7 +8,6 @@ MotionProfile::MotionProfile() {
   _deceleration_steps = 0;
   _max_frequency_hz = 1.0;
   _acceleration_hz_per_sec = 1.0;
-  _min_start_frequency_hz = 1.0;
   _triangular = false;
 }
 
@@ -16,25 +15,14 @@ MotionProfile::MotionProfile() {
 void MotionProfile::configure(
   uint32_t total_steps,
   float max_frequency_hz,
-  float acceleration_hz_per_sec,
-  float min_start_frequency_hz
+  float acceleration_hz_per_sec
 ) {
   _total_steps = total_steps;
   _max_frequency_hz = max_frequency_hz;
   _acceleration_hz_per_sec = acceleration_hz_per_sec;
-  _min_start_frequency_hz = min_start_frequency_hz;
-
-  if (_min_start_frequency_hz < 1.0) {
-    _min_start_frequency_hz = 1.0;
-  }
-
-  if (_min_start_frequency_hz > _max_frequency_hz) {
-    _min_start_frequency_hz = _max_frequency_hz;
-  }
 
   float acceleration_distance =
-    ((_max_frequency_hz * _max_frequency_hz) -
-     (_min_start_frequency_hz * _min_start_frequency_hz)) /
+    (_max_frequency_hz * _max_frequency_hz) /
     (2.0 * _acceleration_hz_per_sec);
 
   _acceleration_steps = (uint32_t)(acceleration_distance + 0.5);
@@ -47,10 +35,7 @@ void MotionProfile::configure(
     _cruise_steps = 0;
 
     float peak_frequency =
-      sqrt(
-        (_min_start_frequency_hz * _min_start_frequency_hz) +
-        (2.0 * _acceleration_hz_per_sec * _acceleration_steps)
-      );
+      sqrt(2.0 * _acceleration_hz_per_sec * _acceleration_steps);
     if (peak_frequency >= 1.0) {
       _max_frequency_hz = peak_frequency;
     }
@@ -111,13 +96,10 @@ uint32_t MotionProfile::getTotalSteps() const {
 
 
 float MotionProfile::calculateFrequencyForStep(uint32_t phase_step) const {
-  float frequency = sqrt(
-    (_min_start_frequency_hz * _min_start_frequency_hz) +
-    (2.0 * _acceleration_hz_per_sec * (phase_step - 1))
-  );
+  float frequency = sqrt(2.0 * _acceleration_hz_per_sec * phase_step);
 
-  if (frequency < _min_start_frequency_hz) {
-    return _min_start_frequency_hz;
+  if (frequency < 1.0) {
+    return 1.0;
   }
 
   if (frequency > _max_frequency_hz) {
