@@ -6,8 +6,8 @@ class RouteManager:
     """Maintains route state for a fixed AprilTag sequence."""
 
     def __init__(self) -> None:
-        """Create a route manager for the fixed 0 -> 1 -> 2 -> 3 -> 4 route."""
-        self.route = [0, 1, 2, 3, 4]
+        """Create a route manager for the fixed 1 -> 2 -> 3 -> 4 route."""
+        self.route = [1, 2, 3, 4]
         self.state = RouteState()
 
     def process_tag(self, tag_id: int | None) -> RouteAction | None:
@@ -35,11 +35,8 @@ class RouteManager:
 
         print(f"Detected Tag: {tag_id}")
 
-        if tag_id == 0:
-            return self._start_route(tag_id)
-
         if tag_id == 1:
-            return self._continue_route(tag_id)
+            return self._start_route(tag_id)
 
         if tag_id == 2:
             return self._prepare_turn(tag_id)

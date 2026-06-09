@@ -7,9 +7,6 @@ def main() -> None:
 
     # Repeated tags simulate the same AprilTag staying visible for many frames.
     detected_tags = [
-        0,
-        0,
-        0,
         1,
         1,
         2,
