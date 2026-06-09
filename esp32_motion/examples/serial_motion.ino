@@ -1,26 +1,24 @@
-#include "../motor_config.h"
-#include "../step_generator.h"
-#include "../differential_drive.h"
-#include "../motion_controller.h"
-#include "../serial_command_handler.h"
+#include "motor_config.h"
+#include "step_generator.h"
+#include "differential_drive.h"
+#include "motion_controller.h"
+#include "serial_command_handler.h"
 
 
-const uint8_t LEFT_STEP_PIN = 25;
-const uint8_t LEFT_DIR_PIN = 26;
-const uint8_t LEFT_ENABLE_PIN = 27;
+const uint8_t LEFT_STEP_PIN = 4;
+const uint8_t LEFT_DIR_PIN = 13;
+const uint8_t LEFT_ENABLE_PIN = 14;
 
-const uint8_t RIGHT_STEP_PIN = 14;
-const uint8_t RIGHT_DIR_PIN = 12;
-const uint8_t RIGHT_ENABLE_PIN = 13;
+const uint8_t RIGHT_STEP_PIN = 16;
+const uint8_t RIGHT_DIR_PIN = 26;
+const uint8_t RIGHT_ENABLE_PIN = 25;
 
 MotorConfig motor_config = {
-  100.0,    // wheel_diameter_mm
-  300.0,    // wheel_base_mm
-  10000,    // pulses_per_revolution
-  10000.0,  // max_frequency_hz
-  5000.0,   // max_acceleration_hz_per_sec
-  50.0,     // min_start_frequency_hz
-  50        // direction_change_settling_ms
+  117.0,    // wheel_diameter_mm
+  324.0,    // wheel_base_mm
+  40000,    // pulses_per_revolution: change only this for T60 pulse setting
+  40000.0,  // max_frequency_hz
+  10000.0   // max_acceleration_hz_per_sec
 };
 
 StepGenerator left_motor(
@@ -47,7 +45,7 @@ void setup() {
   motion_controller.begin();
 
   Serial.println("ESP32 serial motion example started");
-  Serial.println("Valid commands: FORWARD, LEFT, RIGHT, STOP");
+  Serial.println("Commands: FORWARD, LEFT, RIGHT, STOP");
 }
 
 

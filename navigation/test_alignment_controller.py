@@ -1,9 +1,8 @@
 import cv2
 import numpy as np
 
+from communication.serial_motor_controller import SerialMotorController
 from core.application_state import ApplicationState
-from control.serial_commands import SerialCommand
-from control.serial_motor_controller import SerialMotorController
 from navigation.alignment_controller import AlignmentController
 from navigation.motion_commands import MotionCommand
 from perception.perception_manager import PerceptionManager
@@ -70,28 +69,6 @@ def draw_command(frame: np.ndarray, command: MotionCommand) -> None:
     )
 
 
-def to_serial_command(command: MotionCommand) -> SerialCommand:
-    """
-    Convert a navigation MotionCommand to a serial command.
-
-    Args:
-        command: Motion command from AlignmentController.
-
-    Returns:
-        SerialCommand sent to the ESP32.
-    """
-    if command == MotionCommand.FORWARD:
-        return SerialCommand.FORWARD
-
-    if command == MotionCommand.LEFT:
-        return SerialCommand.LEFT
-
-    if command == MotionCommand.RIGHT:
-        return SerialCommand.RIGHT
-
-    return SerialCommand.STOP
-
-
 def main() -> None:
     """Run the live camera-to-serial alignment pipeline."""
     application_state = ApplicationState()
@@ -131,13 +108,13 @@ def main() -> None:
                 cv2.imshow("AGV Alignment Serial Test", frame)
 
             if command != last_command:
-                serial_controller.send_command(to_serial_command(command))
+                serial_controller.send_command(command)
                 last_command = command
 
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
     finally:
-        serial_controller.send_command(SerialCommand.STOP)
+        serial_controller.send_command(MotionCommand.STOP)
         serial_controller.disconnect()
         perception_manager.release()
         cv2.destroyAllWindows()

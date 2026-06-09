@@ -3,9 +3,8 @@ from typing import Any
 import cv2
 import numpy as np
 
+from communication.serial_motor_controller import SerialMotorController
 from core.application_state import ApplicationState
-from control.serial_commands import SerialCommand
-from control.serial_motor_controller import SerialMotorController
 from events.event_generator import EventGenerator
 from events.event_types import PerceptionEvent
 from navigation.alignment_controller import AlignmentController
@@ -131,30 +130,8 @@ class AGVController:
         if motion_command == self.last_motion_command:
             return
 
-        serial_command = self._to_serial_command(motion_command)
-        self.serial_motor_controller.send_command(serial_command)
+        self.serial_motor_controller.send_command(motion_command)
         self.last_motion_command = motion_command
-
-    def _to_serial_command(self, motion_command: MotionCommand) -> SerialCommand:
-        """
-        Convert navigation motion command into serial command text.
-
-        Args:
-            motion_command: Command produced by AlignmentController.
-
-        Returns:
-            Matching SerialCommand for the ESP32.
-        """
-        if motion_command == MotionCommand.FORWARD:
-            return SerialCommand.FORWARD
-
-        if motion_command == MotionCommand.LEFT:
-            return SerialCommand.LEFT
-
-        if motion_command == MotionCommand.RIGHT:
-            return SerialCommand.RIGHT
-
-        return SerialCommand.STOP
 
     def _display_camera_frame(self, detections: list[dict[str, Any]]) -> None:
         """
