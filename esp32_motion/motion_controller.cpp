@@ -6,6 +6,7 @@ MotionController::MotionController(
   DifferentialDrive &drive
 ) : _drive(drive) {
   _config = config;
+  _motion_mode = MODE_IDLE;
   _last_phase = MOTION_IDLE;
   _last_diagnostics_ms = 0;
 }
@@ -18,7 +19,16 @@ void MotionController::begin() {
 
 
 void MotionController::update() {
+  if (_motion_mode == MODE_FORWARD || _motion_mode == MODE_SLOW_FORWARD) {
+    printMotionMode();
+    return;
+  }
+
   if (!_drive.isRunning()) {
+    if (_motion_mode == MODE_TURNING_LEFT || _motion_mode == MODE_TURNING_RIGHT) {
+      _motion_mode = MODE_IDLE;
+      printMotionMode();
+    }
     return;
   }
 
@@ -37,6 +47,7 @@ void MotionController::update() {
 
 
 void MotionController::moveForward(float distance_mm) {
+  _motion_mode = MODE_IDLE;
   uint32_t steps = distanceMmToSteps(distance_mm);
   startProfile(steps);
   _drive.moveForward(steps);
@@ -44,6 +55,7 @@ void MotionController::moveForward(float distance_mm) {
 
 
 void MotionController::moveBackward(float distance_mm) {
+  _motion_mode = MODE_IDLE;
   uint32_t steps = distanceMmToSteps(distance_mm);
   startProfile(steps);
   _drive.moveBackward(steps);
@@ -51,6 +63,7 @@ void MotionController::moveBackward(float distance_mm) {
 
 
 void MotionController::turnLeft(float angle_deg) {
+  _motion_mode = MODE_TURNING_LEFT;
   uint32_t steps = angleDegToTurnSteps(angle_deg);
   startProfile(steps);
   _drive.turnLeft(steps);
@@ -58,6 +71,7 @@ void MotionController::turnLeft(float angle_deg) {
 
 
 void MotionController::turnRight(float angle_deg) {
+  _motion_mode = MODE_TURNING_RIGHT;
   uint32_t steps = angleDegToTurnSteps(angle_deg);
   startProfile(steps);
   _drive.turnRight(steps);
@@ -66,12 +80,30 @@ void MotionController::turnRight(float angle_deg) {
 
 void MotionController::stop() {
   _drive.stop();
+  _motion_mode = MODE_IDLE;
   _last_phase = MOTION_IDLE;
+  printMotionMode();
 }
 
 
 bool MotionController::isRunning() const {
   return _drive.isRunning();
+}
+
+
+void MotionController::startForwardMode() {
+  _motion_mode = MODE_FORWARD;
+  _drive.setFrequency(_config.max_frequency_hz);
+  _drive.moveForward(0);
+  printMotionMode();
+}
+
+
+void MotionController::startSlowForwardMode() {
+  _motion_mode = MODE_SLOW_FORWARD;
+  _drive.setFrequency(_config.max_frequency_hz / 3.0);
+  _drive.moveForward(0);
+  printMotionMode();
 }
 
 
@@ -128,4 +160,36 @@ void MotionController::printDiagnostics(const MotionProfileState &state) {
 
   _last_phase = state.phase;
   _last_diagnostics_ms = now_ms;
+}
+
+
+void MotionController::printMotionMode() {
+  unsigned long now_ms = millis();
+  bool diagnostics_due = (now_ms - _last_diagnostics_ms) >= 250;
+
+  if (!diagnostics_due) {
+    return;
+  }
+
+  Serial.print("Motion Mode: ");
+  Serial.println(motionModeToText(_motion_mode));
+  _last_diagnostics_ms = now_ms;
+}
+
+
+const char *MotionController::motionModeToText(MotionMode mode) const {
+  switch (mode) {
+    case MODE_IDLE:
+      return "IDLE";
+    case MODE_FORWARD:
+      return "FORWARD_MODE";
+    case MODE_SLOW_FORWARD:
+      return "SLOW_FORWARD_MODE";
+    case MODE_TURNING_LEFT:
+      return "TURNING_LEFT";
+    case MODE_TURNING_RIGHT:
+      return "TURNING_RIGHT";
+    default:
+      return "UNKNOWN";
+  }
 }

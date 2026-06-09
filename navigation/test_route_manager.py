@@ -17,11 +17,11 @@ def route_action_to_motion_command(action: RouteAction) -> MotionCommand:
     Returns:
         MotionCommand sent to ESP32.
     """
-    if action == RouteAction.FORWARD:
-        return MotionCommand.FORWARD
+    if action == RouteAction.START_FORWARD:
+        return MotionCommand.START_FORWARD
 
-    if action == RouteAction.SLOW_FORWARD:
-        return MotionCommand.SLOW_FORWARD
+    if action == RouteAction.START_SLOW_FORWARD:
+        return MotionCommand.START_SLOW_FORWARD
 
     if action == RouteAction.TURN_RIGHT:
         return MotionCommand.TURN_RIGHT

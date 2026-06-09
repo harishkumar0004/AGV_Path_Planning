@@ -11,12 +11,12 @@ def main() -> None:
 
     try:
         commands = [
-            MotionCommand.FORWARD,
-            MotionCommand.FORWARD,
-            MotionCommand.LEFT,
-            MotionCommand.LEFT,
-            MotionCommand.RIGHT,
-            MotionCommand.RIGHT,
+            MotionCommand.START_FORWARD,
+            MotionCommand.START_FORWARD,
+            MotionCommand.START_SLOW_FORWARD,
+            MotionCommand.START_SLOW_FORWARD,
+            MotionCommand.TURN_RIGHT,
+            MotionCommand.TURN_RIGHT,
             MotionCommand.STOP,
         ]
 

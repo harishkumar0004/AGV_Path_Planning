@@ -8,12 +8,23 @@
 #include "motion_types.h"
 
 
+enum MotionMode {
+  MODE_IDLE,
+  MODE_FORWARD,
+  MODE_SLOW_FORWARD,
+  MODE_TURNING_LEFT,
+  MODE_TURNING_RIGHT
+};
+
+
 class MotionController {
 public:
   MotionController(MotorConfig config, DifferentialDrive &drive);
 
   void begin();
   void update();
+  void startForwardMode();
+  void startSlowForwardMode();
   void moveForward(float distance_mm);
   void moveBackward(float distance_mm);
   void turnLeft(float angle_deg);
@@ -25,6 +36,7 @@ private:
   MotorConfig _config;
   DifferentialDrive &_drive;
   MotionProfile _profile;
+  MotionMode _motion_mode;
   MotionPhase _last_phase;
   unsigned long _last_diagnostics_ms;
 
@@ -32,6 +44,8 @@ private:
   uint32_t angleDegToTurnSteps(float angle_deg) const;
   void startProfile(uint32_t steps);
   void printDiagnostics(const MotionProfileState &state);
+  void printMotionMode();
+  const char *motionModeToText(MotionMode mode) const;
 };
 
 #endif

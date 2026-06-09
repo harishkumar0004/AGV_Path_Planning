@@ -63,10 +63,10 @@ class NavigationStateManager:
 
         self.state = NavigationState.MOVING
         self.last_processed_tag = 1
-        self.current_action = MotionCommand.START_CONTINUOUS_FORWARD
+        self.current_action = MotionCommand.START_FORWARD
         self.status_message = "Moving"
         print("Detected Tag: 1")
-        print("Executing START_CONTINUOUS_FORWARD")
+        print("Executing START_FORWARD")
         return self.current_action
 
     def _handle_moving(self, tag_id: int | None) -> MotionCommand | None:
@@ -76,10 +76,10 @@ class NavigationStateManager:
 
         self.state = NavigationState.PREPARE_TURN
         self.last_processed_tag = 2
-        self.current_action = MotionCommand.SLOW_MODE
+        self.current_action = MotionCommand.START_SLOW_FORWARD
         self.status_message = "Prepare Turn"
         print("Detected Tag: 2")
-        print("Executing SLOW_MODE")
+        print("Executing START_SLOW_FORWARD")
         return self.current_action
 
     def _handle_prepare_turn(self, tag_id: int | None) -> MotionCommand | None:

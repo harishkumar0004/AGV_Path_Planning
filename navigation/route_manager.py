@@ -90,12 +90,12 @@ class RouteManager:
             tag_id: Detected start tag.
 
         Returns:
-            FORWARD action.
+            START_FORWARD action.
         """
         self.state.route_active = True
         self._advance_route(tag_id)
-        print("Executing FORWARD")
-        return RouteAction.FORWARD
+        print("Executing START_FORWARD")
+        return RouteAction.START_FORWARD
 
     def _continue_route(self, tag_id: int) -> RouteAction:
         """
@@ -105,11 +105,11 @@ class RouteManager:
             tag_id: Detected continuation tag.
 
         Returns:
-            FORWARD action.
+            START_FORWARD action.
         """
         self._advance_route(tag_id)
-        print("Executing FORWARD")
-        return RouteAction.FORWARD
+        print("Executing START_FORWARD")
+        return RouteAction.START_FORWARD
 
     def _prepare_turn(self, tag_id: int) -> RouteAction:
         """
@@ -119,13 +119,13 @@ class RouteManager:
             tag_id: Detected preparation tag.
 
         Returns:
-            SLOW_FORWARD action while upcoming_action is set to TURN_RIGHT.
+            START_SLOW_FORWARD action while upcoming_action is set to TURN_RIGHT.
         """
         self.state.upcoming_action = RouteAction.TURN_RIGHT
         self._advance_route(tag_id)
         print("Preparing Turn")
-        print("Executing SLOW_FORWARD")
-        return RouteAction.SLOW_FORWARD
+        print("Executing START_SLOW_FORWARD")
+        return RouteAction.START_SLOW_FORWARD
 
     def _request_turn_stop(self, tag_id: int) -> RouteAction:
         """

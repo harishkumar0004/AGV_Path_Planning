@@ -49,27 +49,29 @@ void SerialCommandHandler::processCommand(String command) {
   _serial.print("RX: ");
   _serial.println(command);
 
-  if (command == "FORWARD") {
-    _serial.println("Executing moveForward(100)");
-    _motion_controller.moveForward(100.0);
+  if (command == "START_FORWARD") {
+    _serial.println("Motion Mode: FORWARD_MODE");
+    _motion_controller.startForwardMode();
     return;
   }
 
-  if (command == "START_CONTINUOUS_FORWARD") {
-    _serial.println("Executing moveForward(100000)");
-    _motion_controller.moveForward(100000.0);
+  if (command == "START_SLOW_FORWARD") {
+    _serial.println("Motion Mode: SLOW_FORWARD_MODE");
+    _motion_controller.startSlowForwardMode();
     return;
   }
 
-  if (command == "SLOW_FORWARD") {
-    _serial.println("Executing moveForward(50)");
-    _motion_controller.moveForward(50.0);
+  if (command == "STOP") {
+    _serial.println("Motion Mode: IDLE");
+    _serial.println("Executing stop()");
+    _motion_controller.stop();
     return;
   }
 
-  if (command == "SLOW_MODE") {
-    _serial.println("Executing moveForward(100)");
-    _motion_controller.moveForward(100.0);
+  if (command == "TURN_LEFT") {
+    _serial.println("Motion Mode: TURNING_LEFT");
+    _serial.println("Executing turnLeft(10)");
+    _motion_controller.turnLeft(10.0);
     return;
   }
 
@@ -86,14 +88,9 @@ void SerialCommandHandler::processCommand(String command) {
   }
 
   if (command == "TURN_RIGHT") {
+    _serial.println("Motion Mode: TURNING_RIGHT");
     _serial.println("Executing turnRight(10)");
     _motion_controller.turnRight(10.0);
-    return;
-  }
-
-  if (command == "STOP") {
-    _serial.println("Executing stop()");
-    _motion_controller.stop();
     return;
   }
 

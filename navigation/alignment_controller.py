@@ -36,12 +36,12 @@ class AlignmentController:
         right_limit = frame_center_x + self.center_tolerance_px
 
         if tag_center_x < left_limit:
-            return MotionCommand.LEFT
+            return MotionCommand.TURN_LEFT
 
         if tag_center_x > right_limit:
-            return MotionCommand.RIGHT
+            return MotionCommand.TURN_RIGHT
 
-        return MotionCommand.FORWARD
+        return MotionCommand.START_FORWARD
 
     def calculate(self, image_width: int, tag_center_x: float) -> AlignmentResult:
         """

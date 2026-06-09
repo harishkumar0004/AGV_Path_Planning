@@ -45,7 +45,7 @@ void setup() {
   motion_controller.begin();
 
   Serial.println("ESP32 serial motion example started");
-  Serial.println("Commands: FORWARD, LEFT, RIGHT, STOP");
+  Serial.println("Commands: START_FORWARD, START_SLOW_FORWARD, STOP, TURN_LEFT, TURN_RIGHT");
 }
 
 
