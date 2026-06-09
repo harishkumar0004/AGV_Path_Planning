@@ -55,6 +55,12 @@ void SerialCommandHandler::processCommand(String command) {
     return;
   }
 
+  if (command == "SLOW_FORWARD") {
+    _serial.println("Executing moveForward(50)");
+    _motion_controller.moveForward(50.0);
+    return;
+  }
+
   if (command == "LEFT") {
     _serial.println("Executing turnLeft(10)");
     _motion_controller.turnLeft(10.0);
@@ -62,6 +68,12 @@ void SerialCommandHandler::processCommand(String command) {
   }
 
   if (command == "RIGHT") {
+    _serial.println("Executing turnRight(10)");
+    _motion_controller.turnRight(10.0);
+    return;
+  }
+
+  if (command == "TURN_RIGHT") {
     _serial.println("Executing turnRight(10)");
     _motion_controller.turnRight(10.0);
     return;

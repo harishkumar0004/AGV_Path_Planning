@@ -21,3 +21,12 @@ class RouteState:
 
     # Index of the next expected tag in the fixed route.
     current_route_index: int = 0
+
+    # True after Tag 3 requests a STOP before the right turn.
+    waiting_for_turn_idle: bool = False
+
+    # True after STOP has been sent for the Tag 3 turn sequence.
+    turn_stop_sent: bool = False
+
+    # Turn marker currently being handled.
+    pending_turn_tag: int | None = None

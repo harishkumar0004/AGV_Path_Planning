@@ -10,12 +10,17 @@ class RouteManager:
         self.route = [1, 2, 3, 4]
         self.state = RouteState()
 
-    def process_tag(self, tag_id: int | None) -> RouteAction | None:
+    def process_tag(
+        self,
+        tag_id: int | None,
+        motion_idle: bool = False,
+    ) -> RouteAction | None:
         """
         Process one detected tag and return a route action when needed.
 
         Args:
             tag_id: Detected AprilTag ID, or None if no tag is visible.
+            motion_idle: True when the motor controller has finished stopping.
 
         Returns:
             RouteAction for newly processed route tags, otherwise None.
@@ -25,6 +30,9 @@ class RouteManager:
 
         if self.state.route_completed:
             return None
+
+        if self.state.waiting_for_turn_idle:
+            return self._continue_turn_when_idle(tag_id, motion_idle)
 
         # Prevent repeated triggering while the same tag remains visible.
         if tag_id == self.state.last_processed_tag:
@@ -42,7 +50,7 @@ class RouteManager:
             return self._prepare_turn(tag_id)
 
         if tag_id == 3:
-            return self._execute_turn(tag_id)
+            return self._request_turn_stop(tag_id)
 
         if tag_id == 4:
             return self._stop_route(tag_id)
@@ -111,26 +119,56 @@ class RouteManager:
             tag_id: Detected preparation tag.
 
         Returns:
-            FORWARD action while upcoming_action is set to TURN_RIGHT.
+            SLOW_FORWARD action while upcoming_action is set to TURN_RIGHT.
         """
         self.state.upcoming_action = RouteAction.TURN_RIGHT
         self._advance_route(tag_id)
-        print("Upcoming Action: TURN_RIGHT")
-        print("Executing FORWARD")
-        return RouteAction.FORWARD
+        print("Preparing Turn")
+        print("Executing SLOW_FORWARD")
+        return RouteAction.SLOW_FORWARD
 
-    def _execute_turn(self, tag_id: int) -> RouteAction:
+    def _request_turn_stop(self, tag_id: int) -> RouteAction:
         """
-        Execute the prepared right turn at Tag 3.
+        Stop forward motion before turning at Tag 3.
 
         Args:
             tag_id: Detected turn tag.
 
         Returns:
-            TURN_RIGHT action.
+            STOP action before TURN_RIGHT is allowed.
         """
+        self.state.waiting_for_turn_idle = True
+        self.state.turn_stop_sent = True
+        self.state.pending_turn_tag = tag_id
+        print("Stopping Motion")
+        return RouteAction.STOP
+
+    def _continue_turn_when_idle(
+        self,
+        tag_id: int,
+        motion_idle: bool,
+    ) -> RouteAction | None:
+        """
+        Execute the pending turn only after motion has stopped.
+
+        Args:
+            tag_id: Detected AprilTag ID.
+            motion_idle: True when forward motion is stopped.
+
+        Returns:
+            TURN_RIGHT when safe, otherwise None.
+        """
+        if tag_id != self.state.pending_turn_tag:
+            return None
+
+        if not motion_idle:
+            return None
+
         self._advance_route(tag_id)
         self.state.upcoming_action = None
+        self.state.waiting_for_turn_idle = False
+        self.state.turn_stop_sent = False
+        self.state.pending_turn_tag = None
         print("Executing TURN_RIGHT")
         return RouteAction.TURN_RIGHT
 
