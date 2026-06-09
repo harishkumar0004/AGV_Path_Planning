@@ -37,7 +37,7 @@ StepGenerator right_motor(
 
 DifferentialDrive drive(left_motor, right_motor);
 MotionController motion_controller(motor_config, drive);
-SerialCommandHandler serial_handler(Serial, motion_controller, 2000);
+SerialCommandHandler serial_handler(Serial, motion_controller, 0);
 
 
 void setup() {

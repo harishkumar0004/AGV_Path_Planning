@@ -55,9 +55,21 @@ void SerialCommandHandler::processCommand(String command) {
     return;
   }
 
+  if (command == "START_CONTINUOUS_FORWARD") {
+    _serial.println("Executing moveForward(100000)");
+    _motion_controller.moveForward(100000.0);
+    return;
+  }
+
   if (command == "SLOW_FORWARD") {
     _serial.println("Executing moveForward(50)");
     _motion_controller.moveForward(50.0);
+    return;
+  }
+
+  if (command == "SLOW_MODE") {
+    _serial.println("Executing moveForward(100)");
+    _motion_controller.moveForward(100.0);
     return;
   }
 
