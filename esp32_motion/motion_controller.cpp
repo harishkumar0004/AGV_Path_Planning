@@ -10,9 +10,12 @@ MotionController::MotionController(
   _last_phase = MOTION_IDLE;
   _last_diagnostics_ms = 0;
   _profile_start_step_count = 0;
+  _profile_step_offset = 0;
   _continuous_cruise_step = 0;
   _last_profile_frequency_hz = 1.0;
+  _speed_transition_target_hz = 1.0;
   _continuous_profile_active = false;
+  _speed_transition_active = false;
 }
 
 
@@ -34,10 +37,19 @@ void MotionController::update() {
   MotionProfileState state = calculateActiveProfileState();
 
   if (state.phase == MOTION_COMPLETE) {
+    if (_speed_transition_active) {
+      _speed_transition_active = false;
+      startContinuousCruise(_speed_transition_target_hz);
+      printDiagnostics(state);
+      printMotionMode();
+      return;
+    }
+
     _drive.stop();
     _motion_mode = MODE_IDLE;
     _last_phase = MOTION_IDLE;
     _continuous_profile_active = false;
+    _speed_transition_active = false;
     _last_profile_frequency_hz = 1.0;
     printDiagnostics(state);
     printMotionMode();
@@ -52,6 +64,7 @@ void MotionController::update() {
 void MotionController::moveForward(float distance_mm) {
   _motion_mode = MODE_IDLE;
   _continuous_profile_active = false;
+  _speed_transition_active = false;
   uint32_t steps = distanceMmToSteps(distance_mm);
   startProfile(steps, _config.max_frequency_hz);
   _drive.moveForward(steps);
@@ -61,6 +74,7 @@ void MotionController::moveForward(float distance_mm) {
 void MotionController::moveBackward(float distance_mm) {
   _motion_mode = MODE_IDLE;
   _continuous_profile_active = false;
+  _speed_transition_active = false;
   uint32_t steps = distanceMmToSteps(distance_mm);
   startProfile(steps, _config.max_frequency_hz);
   _drive.moveBackward(steps);
@@ -70,6 +84,7 @@ void MotionController::moveBackward(float distance_mm) {
 void MotionController::turnLeft(float angle_deg) {
   _motion_mode = MODE_TURNING_LEFT;
   _continuous_profile_active = false;
+  _speed_transition_active = false;
   uint32_t steps = angleDegToTurnSteps(angle_deg);
   startProfile(steps, _config.max_frequency_hz);
   _drive.turnLeft(steps);
@@ -79,6 +94,7 @@ void MotionController::turnLeft(float angle_deg) {
 void MotionController::turnRight(float angle_deg) {
   _motion_mode = MODE_TURNING_RIGHT;
   _continuous_profile_active = false;
+  _speed_transition_active = false;
   uint32_t steps = angleDegToTurnSteps(angle_deg);
   startProfile(steps, _config.max_frequency_hz);
   _drive.turnRight(steps);
@@ -90,6 +106,7 @@ void MotionController::stop() {
     _motion_mode = MODE_IDLE;
     _last_phase = MOTION_IDLE;
     _continuous_profile_active = false;
+    _speed_transition_active = false;
     _last_profile_frequency_hz = 1.0;
     printMotionMode();
     return;
@@ -108,6 +125,7 @@ bool MotionController::isRunning() const {
 
 void MotionController::startForwardMode() {
   _motion_mode = MODE_FORWARD;
+  _speed_transition_active = false;
   startContinuousProfile(_config.max_frequency_hz);
   _drive.moveForward(0);
   printMotionMode();
@@ -115,9 +133,17 @@ void MotionController::startForwardMode() {
 
 
 void MotionController::startSlowForwardMode() {
-  _motion_mode = MODE_SLOW_FORWARD;
-  startContinuousProfile(_config.max_frequency_hz / 3.0);
-  _drive.moveForward(0);
+  float slow_frequency_hz = _config.max_frequency_hz / 2.0;
+
+  if (_drive.isRunning() && _last_profile_frequency_hz > slow_frequency_hz) {
+    startSpeedTransition(slow_frequency_hz, MODE_SLOW_FORWARD);
+  } else {
+    _motion_mode = MODE_SLOW_FORWARD;
+    _speed_transition_active = false;
+    startContinuousProfile(slow_frequency_hz);
+    _drive.moveForward(0);
+  }
+
   printMotionMode();
 }
 
@@ -163,8 +189,10 @@ void MotionController::startProfile(uint32_t steps, float max_frequency_hz) {
     _config.max_acceleration_hz_per_sec
   );
   _profile_start_step_count = 0;
+  _profile_step_offset = 0;
   _continuous_cruise_step = 0;
   _continuous_profile_active = false;
+  _speed_transition_active = false;
   _last_phase = MOTION_IDLE;
   _last_diagnostics_ms = 0;
 }
@@ -180,6 +208,60 @@ void MotionController::startContinuousProfile(float cruise_frequency_hz) {
 }
 
 
+void MotionController::startContinuousCruise(float cruise_frequency_hz) {
+  uint32_t acceleration_steps = frequencyToAccelerationSteps(cruise_frequency_hz);
+  uint32_t total_steps = (acceleration_steps * 3) + 1;
+
+  _profile.configure(
+    total_steps,
+    cruise_frequency_hz,
+    _config.max_acceleration_hz_per_sec
+  );
+
+  uint32_t current_steps = _drive.getStepCount();
+  _profile_start_step_count = current_steps;
+  _profile_step_offset = acceleration_steps;
+  _continuous_cruise_step = acceleration_steps;
+  _continuous_profile_active = true;
+  _last_phase = MOTION_IDLE;
+  _last_diagnostics_ms = 0;
+}
+
+
+void MotionController::startSpeedTransition(
+  float target_frequency_hz,
+  MotionMode target_mode
+) {
+  float frequency_difference = _last_profile_frequency_hz - target_frequency_hz;
+
+  if (frequency_difference <= 1.0) {
+    _motion_mode = target_mode;
+    startContinuousCruise(target_frequency_hz);
+    return;
+  }
+
+  uint32_t transition_steps = frequencyToAccelerationSteps(frequency_difference);
+  uint32_t total_steps = (transition_steps * 2) + 1;
+
+  _profile.configure(
+    total_steps,
+    frequency_difference,
+    _config.max_acceleration_hz_per_sec
+  );
+
+  uint32_t deceleration_start_step = transition_steps + 1;
+  _profile_start_step_count = _drive.getStepCount();
+  _profile_step_offset = deceleration_start_step;
+  _continuous_cruise_step = 0;
+  _continuous_profile_active = false;
+  _speed_transition_target_hz = target_frequency_hz;
+  _speed_transition_active = true;
+  _motion_mode = target_mode;
+  _last_phase = MOTION_IDLE;
+  _last_diagnostics_ms = 0;
+}
+
+
 void MotionController::startStopProfile() {
   float stop_frequency_hz = _last_profile_frequency_hz;
   uint32_t stop_steps = frequencyToAccelerationSteps(stop_frequency_hz);
@@ -192,25 +274,31 @@ void MotionController::startStopProfile() {
   );
 
   uint32_t deceleration_start_step = stop_steps + 1;
-  _profile_start_step_count =
-    _drive.getStepCount() > deceleration_start_step
-      ? _drive.getStepCount() - deceleration_start_step
-      : 0;
+  _profile_start_step_count = _drive.getStepCount();
+  _profile_step_offset = deceleration_start_step;
   _continuous_cruise_step = 0;
   _continuous_profile_active = false;
+  _speed_transition_active = false;
   _last_phase = MOTION_IDLE;
   _last_diagnostics_ms = 0;
 }
 
 
 MotionProfileState MotionController::calculateActiveProfileState() const {
-  uint32_t profile_step = _drive.getStepCount() - _profile_start_step_count;
+  uint32_t profile_step =
+    (_drive.getStepCount() - _profile_start_step_count) + _profile_step_offset;
 
   if (_continuous_profile_active && profile_step > _continuous_cruise_step) {
     profile_step = _continuous_cruise_step;
   }
 
-  return _profile.calculate(profile_step);
+  MotionProfileState state = _profile.calculate(profile_step);
+
+  if (_speed_transition_active && state.phase != MOTION_COMPLETE) {
+    state.target_frequency_hz += _speed_transition_target_hz;
+  }
+
+  return state;
 }
 
 

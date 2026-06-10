@@ -59,6 +59,12 @@ void SerialCommandHandler::processCommand(String command) {
   _serial.print("RX: ");
   _serial.println(command);
 
+  if (command_name == "STATUS") {
+    _serial.print("STATUS: ");
+    _serial.println(_motion_controller.isRunning() ? "RUNNING" : "IDLE");
+    return;
+  }
+
   if (command_name == "START_FORWARD") {
     _serial.println("Motion Mode: FORWARD_MODE");
     _motion_controller.startForwardMode();
@@ -72,7 +78,7 @@ void SerialCommandHandler::processCommand(String command) {
   }
 
   if (command_name == "STOP") {
-    _serial.println("Motion Mode: IDLE");
+    _serial.println("Motion Mode: STOPPING");
     _serial.println("Executing stop()");
     _motion_controller.stop();
     return;

@@ -222,10 +222,9 @@ def main() -> None:
         baudrate=args.baudrate,
     )
     monitor = PerformanceMonitor()
-    stop_time: float | None = None
+    last_status_query_time = 0.0
     last_alignment_command: MotionCommand | None = None
     last_alignment_command_time = 0.0
-    stop_to_turn_delay_sec = args.stop_to_turn_delay
 
     if not perception_manager.initialize():
         print("PerceptionManager failed to initialize camera.")
@@ -250,25 +249,23 @@ def main() -> None:
             start_pressed = key == ord("f") or key == ord("F")
 
             motion_complete = False
-            if navigation_manager.state == NavigationState.TURNING:
-                if navigation_manager.stop_before_turn_sent and not navigation_manager.turn_right_sent:
-                    if stop_time is None:
-                        stop_time = time.monotonic()
-
-                    motion_complete = (
-                        time.monotonic() - stop_time
-                    ) >= stop_to_turn_delay_sec
-                else:
-                    stop_time = None
-            else:
-                stop_time = None
+            if navigation_manager.state in {
+                NavigationState.STOPPING,
+                NavigationState.ALIGNING,
+                NavigationState.TURNING,
+            }:
+                now = time.monotonic()
+                if (now - last_status_query_time) >= args.status_query_interval:
+                    motion_running = serial_controller.is_motion_running()
+                    motion_complete = motion_running is False
+                    last_status_query_time = now
 
             alignment_error: float | None = None
             alignment_complete = False
             alignment_command: MotionCommand | None = None
             turn_tag_visible = tag_id == 3
 
-            if navigation_manager.state == NavigationState.ALIGNING:
+            if navigation_manager.state == NavigationState.ALIGNING and motion_complete:
                 if turn_tag_visible and frame is not None and perception.center_x is not None:
                     alignment_result = alignment_controller.calculate(
                         image_width=frame.shape[1],
@@ -380,10 +377,10 @@ def parse_args() -> argparse.Namespace:
         help="Seconds between repeated alignment correction commands.",
     )
     parser.add_argument(
-        "--stop-to-turn-delay",
+        "--status-query-interval",
         type=float,
-        default=0.5,
-        help="Seconds to wait after STOP before sending TURN_RIGHT.",
+        default=0.1,
+        help="Seconds between ESP32 MotionController STATUS queries.",
     )
     return parser.parse_args()
 

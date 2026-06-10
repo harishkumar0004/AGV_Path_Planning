@@ -105,6 +105,47 @@ class SerialMotorController:
 
         return self._write_message(formatted_message)
 
+    def is_motion_running(self, response_timeout_sec: float = 0.2) -> bool | None:
+        """
+        Query whether the ESP32 MotionController is currently running.
+
+        Args:
+            response_timeout_sec: Maximum time to wait for a STATUS response.
+
+        Returns:
+            True when motion is running, False when idle, or None on failure.
+        """
+        if not self._ensure_connected() or self.serial_connection is None:
+            return None
+
+        try:
+            self.serial_connection.write(b"STATUS\n")
+            self.serial_connection.flush()
+            deadline = time.monotonic() + response_timeout_sec
+
+            while time.monotonic() < deadline:
+                if self.serial_connection.in_waiting <= 0:
+                    time.sleep(0.005)
+                    continue
+
+                response = self.serial_connection.readline().decode(
+                    "utf-8",
+                    errors="replace",
+                ).strip()
+
+                if response == "STATUS: RUNNING":
+                    return True
+
+                if response == "STATUS: IDLE":
+                    return False
+
+            print("ESP32 STATUS response timed out.")
+            return None
+        except serial.SerialException as error:
+            print(f"Serial status query failed: {error}")
+            self.disconnect()
+            return None
+
     def disconnect(self) -> None:
         """Close the serial connection."""
         if self.serial_connection is not None and self.serial_connection.is_open:

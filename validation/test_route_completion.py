@@ -60,7 +60,7 @@ def run_route_completion_test(args: argparse.Namespace) -> None:
         port=args.port,
         baudrate=args.baudrate,
     )
-    stop_time: float | None = None
+    last_status_query_time = 0.0
     last_alignment_command: MotionCommand | None = None
     last_alignment_command_time = 0.0
     tag_4_detected = False
@@ -89,24 +89,22 @@ def run_route_completion_test(args: argparse.Namespace) -> None:
                 print("Tag 4 detected after turn.")
 
             motion_complete = False
-            if navigation_manager.state == NavigationState.TURNING:
-                if navigation_manager.stop_before_turn_sent and not navigation_manager.turn_right_sent:
-                    if stop_time is None:
-                        stop_time = time.monotonic()
-
-                    motion_complete = (
-                        time.monotonic() - stop_time
-                    ) >= args.stop_to_turn_delay
-                else:
-                    stop_time = None
-            else:
-                stop_time = None
+            if navigation_manager.state in {
+                NavigationState.STOPPING,
+                NavigationState.ALIGNING,
+                NavigationState.TURNING,
+            }:
+                now = time.monotonic()
+                if (now - last_status_query_time) >= args.status_query_interval:
+                    motion_running = serial_controller.is_motion_running()
+                    motion_complete = motion_running is False
+                    last_status_query_time = now
 
             alignment_complete = False
             alignment_command: MotionCommand | None = None
             turn_tag_visible = tag_id == 3
 
-            if navigation_manager.state == NavigationState.ALIGNING:
+            if navigation_manager.state == NavigationState.ALIGNING and motion_complete:
                 if turn_tag_visible and frame is not None and perception.center_x is not None:
                     alignment_result = alignment_controller.calculate(
                         image_width=frame.shape[1],
@@ -195,10 +193,10 @@ def parse_args() -> argparse.Namespace:
         help="Seconds between repeated alignment correction commands.",
     )
     parser.add_argument(
-        "--stop-to-turn-delay",
+        "--status-query-interval",
         type=float,
-        default=0.5,
-        help="Seconds to wait after STOP before sending TURN_RIGHT.",
+        default=0.1,
+        help="Seconds between ESP32 MotionController STATUS queries.",
     )
     return parser.parse_args()
 

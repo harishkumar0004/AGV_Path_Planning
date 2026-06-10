@@ -46,8 +46,15 @@ class NavigationStateManager:
         if self.state == NavigationState.PREPARE_TURN:
             return self._handle_prepare_turn(tag_id)
 
+        if self.state == NavigationState.STOPPING:
+            return self._handle_stopping(motion_complete)
+
         if self.state == NavigationState.ALIGNING:
-            return self._handle_aligning(alignment_complete, tag_visible)
+            return self._handle_aligning(
+                alignment_complete,
+                tag_visible,
+                motion_complete,
+            )
 
         if self.state == NavigationState.TURNING:
             return self._handle_turning(tag_id, motion_complete)
@@ -77,7 +84,10 @@ class NavigationStateManager:
         return self.current_action
 
     def _handle_moving(self, tag_id: int | None) -> MotionCommand | None:
-        """Transition from MOVING to PREPARE_TURN at Tag 2."""
+        """Handle continuous movement, turn preparation, and final stop."""
+        if tag_id == 4 and self.last_processed_tag == 3:
+            return self._complete_route(tag_id)
+
         if tag_id != 2 or self.last_processed_tag == 2:
             return None
 
@@ -90,16 +100,37 @@ class NavigationStateManager:
         return self.current_action
 
     def _handle_prepare_turn(self, tag_id: int | None) -> MotionCommand | None:
-        """Enter alignment when the turn marker Tag 3 is reached."""
+        """Stop forward motion when the turn marker Tag 3 is reached."""
         if tag_id != 3:
             return None
 
         if self.stop_before_turn_sent:
             return None
 
+        self.state = NavigationState.STOPPING
+        self.stop_before_turn_sent = True
+        self.current_action = MotionCommand.STOP
+        self.status_message = "Stopping at Tag 3"
+        print("Detected Tag: 3")
+        print("Executing STOP")
+        return self.current_action
+
+    def _handle_stopping(self, motion_complete: bool) -> MotionCommand | None:
+        """
+        Wait until the robot is fully stopped before aligning on Tag 3.
+
+        Args:
+            motion_complete: True when the motor controller is no longer running.
+
+        Returns:
+            None. This state only gates entry into ALIGNING.
+        """
+        if not motion_complete:
+            self.status_message = "Stopping at Tag 3"
+            return None
+
         self.state = NavigationState.ALIGNING
         self.status_message = "Aligning on Tag 3"
-        print("Detected Tag: 3")
         print("Entering ALIGNING")
         return None
 
@@ -107,6 +138,7 @@ class NavigationStateManager:
         self,
         alignment_complete: bool,
         tag_visible: bool,
+        motion_complete: bool,
     ) -> MotionCommand | None:
         """
         Wait until the turn tag is centered before stopping for the turn.
@@ -114,12 +146,17 @@ class NavigationStateManager:
         Args:
             alignment_complete: True when horizontal error is within threshold.
             tag_visible: True when Tag 3 is still visible.
+            motion_complete: True when no alignment correction is still running.
 
         Returns:
-            STOP once alignment is complete, otherwise None.
+            TURN_RIGHT once alignment is complete, otherwise None.
         """
         if not tag_visible:
             self.status_message = "Aligning - Tag 3 Lost"
+            return None
+
+        if not motion_complete:
+            self.status_message = "Waiting for alignment correction"
             return None
 
         if not alignment_complete:
@@ -127,11 +164,12 @@ class NavigationStateManager:
             return None
 
         self.state = NavigationState.TURNING
-        self.stop_before_turn_sent = True
-        self.current_action = MotionCommand.STOP
-        self.status_message = "Stopping before turn"
+        self.turn_right_sent = True
+        self.last_processed_tag = 3
+        self.current_action = MotionCommand.TURN_RIGHT
+        self.status_message = "Turning Right"
         print("Alignment Complete")
-        print("Executing STOP")
+        print("Executing TURN_RIGHT")
         return self.current_action
 
     def _handle_turning(
@@ -139,25 +177,34 @@ class NavigationStateManager:
         tag_id: int | None,
         motion_complete: bool,
     ) -> MotionCommand | None:
-        """Send TURN_RIGHT after STOP completes, then stop route at Tag 4."""
-        if self.stop_before_turn_sent and not self.turn_right_sent:
-            if not motion_complete:
-                return None
-
-            self.turn_right_sent = True
-            self.last_processed_tag = 3
-            self.current_action = MotionCommand.TURN_RIGHT
+        """Wait for turn completion, then resume forward route movement."""
+        if not motion_complete:
             self.status_message = "Turning Right"
-            print("Executing TURN_RIGHT")
-            return self.current_action
+            return None
 
-        if tag_id == 4 and self.last_processed_tag != 4:
-            self.state = NavigationState.ROUTE_COMPLETE
-            self.last_processed_tag = 4
-            self.current_action = MotionCommand.STOP
-            self.status_message = "Route Complete"
-            print("Detected Tag: 4")
-            print("Executing STOP")
-            return self.current_action
+        self.state = NavigationState.MOVING
+        self.current_action = MotionCommand.START_FORWARD
+        self.status_message = "Moving after turn"
+        print("Turn Complete")
+        print("Executing START_FORWARD")
+        return self.current_action
 
-        return None
+    def _complete_route(self, tag_id: int) -> MotionCommand:
+        """
+        Stop the AGV and mark the fixed route complete.
+
+        Args:
+            tag_id: Destination AprilTag ID.
+
+        Returns:
+            STOP command.
+        """
+        self.state = NavigationState.ROUTE_COMPLETE
+        self.last_processed_tag = tag_id
+        self.current_action = MotionCommand.STOP
+        self.status_message = "Route Complete"
+        self.stop_before_turn_sent = False
+        self.turn_right_sent = False
+        print(f"Detected Tag: {tag_id}")
+        print("Executing STOP")
+        return self.current_action
