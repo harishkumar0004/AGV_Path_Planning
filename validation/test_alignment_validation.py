@@ -1,4 +1,5 @@
 import argparse
+import math
 import time
 from typing import Any
 
@@ -30,13 +31,40 @@ def correction_name(action: MotionCommand) -> str:
     return "STOP"
 
 
+def calculate_tag_orientation_deg(detection: dict[str, Any] | None) -> float | None:
+    """
+    Calculate AprilTag top-edge orientation from its corner coordinates.
+
+    Args:
+        detection: AprilTag detection containing corner coordinates, or None.
+
+    Returns:
+        Signed top-edge orientation angle in degrees, or None.
+    """
+    if detection is None:
+        return None
+
+    corners = detection.get("corners", [])
+    if len(corners) < 2:
+        return None
+
+    x0, y0 = corners[0]
+    x1, y1 = corners[1]
+    dx = x1 - x0
+    dy = y1 - y0
+
+    return math.degrees(math.atan2(dy, dx))
+
+
 def draw_validation_overlay(
     frame,
     detection: dict[str, Any] | None,
     error_x: float | None,
+    orientation_error_deg: float | None,
     command_name: str,
     alignment_state: str,
     tolerance_px: float,
+    orientation_tolerance_deg: float,
 ) -> None:
     """
     Draw camera guides and alignment validation information.
@@ -45,9 +73,11 @@ def draw_validation_overlay(
         frame: Camera image to annotate.
         detection: First visible AprilTag detection, or None.
         error_x: Horizontal tag alignment error, or None.
+        orientation_error_deg: Signed AprilTag top-edge angle, or None.
         command_name: Current LEFT, RIGHT, or STOP command.
         alignment_state: Current validation state text.
         tolerance_px: Allowed horizontal alignment error.
+        orientation_tolerance_deg: Allowed absolute orientation error.
     """
     image_height, image_width = frame.shape[:2]
     image_center_x = image_width // 2
@@ -111,20 +141,27 @@ def draw_validation_overlay(
         else (0, 165, 255)
     )
     error_text = f"{error_x:.1f} px" if error_x is not None else "None"
+    orientation_text = (
+        f"{orientation_error_deg:+.1f} deg"
+        if orientation_error_deg is not None
+        else "None"
+    )
 
     lines = [
         f"Image Center X: {image_center_x}",
         f"Tag Center X: {tag_center_text}",
-        f"Alignment Error: {error_text}",
+        f"Position Error X: {error_text}",
+        f"Orientation Error: {orientation_text}",
         f"Current Command: {command_name}",
         f"Alignment State: {alignment_state}",
-        f"Tolerance: +/-{tolerance_px:g} px",
+        f"Position Tolerance: +/-{tolerance_px:g} px",
+        f"Orientation Tolerance: +/-{orientation_tolerance_deg:g} deg",
         "A: ALIGN   S: STOP   Q: QUIT",
     ]
 
     y = 30
     for index, line in enumerate(lines):
-        color = status_color if index == 4 else (255, 255, 255)
+        color = status_color if index == 5 else (255, 255, 255)
         cv2.putText(
             frame,
             line,
@@ -141,18 +178,25 @@ def log_alignment(
     tag_center_x: float | None,
     image_center_x: float,
     error_x: float | None,
+    orientation_error_deg: float | None,
     command_name: str,
     alignment_state: str,
 ) -> None:
     """Print one alignment decision to the terminal."""
     tag_text = f"{tag_center_x:.1f}" if tag_center_x is not None else "None"
     error_text = f"{error_x:.1f}" if error_x is not None else "None"
+    orientation_text = (
+        f"{orientation_error_deg:+.1f}"
+        if orientation_error_deg is not None
+        else "None"
+    )
 
     print(f"Tag Center X: {tag_text}")
     print(f"Image Center X: {image_center_x:.1f}")
-    print(f"Error X: {error_text}")
-    print(f"Correction Command: {command_name}")
-    print(f"Alignment State: {alignment_state}")
+    print(f"Position Error: {error_text}")
+    print(f"Orientation Angle: {orientation_text} deg")
+    print(f"Current Command: {command_name}")
+    print(f"State: {alignment_state}")
     print()
 
 
@@ -179,6 +223,7 @@ def run_alignment_validation(args: argparse.Namespace) -> None:
     previous_decision: str | None = None
     stable_decision_frames = 0
     last_status_query_time = 0.0
+    last_diagnostic_log_time = 0.0
     motion_running: bool | None = None
 
     if not perception_manager.initialize():
@@ -208,6 +253,7 @@ def run_alignment_validation(args: argparse.Namespace) -> None:
                 else 320.0
             )
             error_x: float | None = None
+            orientation_error_deg = calculate_tag_orientation_deg(detection)
             desired_command = "STOP"
 
             if tag_center_x is not None and frame is not None:
@@ -217,6 +263,16 @@ def run_alignment_validation(args: argparse.Namespace) -> None:
                 )
                 error_x = result.error_x
                 desired_command = correction_name(result.action)
+
+            position_aligned = (
+                error_x is not None
+                and abs(error_x) < args.tolerance
+            )
+            orientation_aligned = (
+                orientation_error_deg is not None
+                and abs(orientation_error_deg) < args.orientation_tolerance
+            )
+            validation_aligned = position_aligned and orientation_aligned
 
             key = cv2.waitKey(1) & 0xFF
 
@@ -250,7 +306,7 @@ def run_alignment_validation(args: argparse.Namespace) -> None:
                         current_command = "STOP"
                         previous_decision = None
                         stable_decision_frames = 0
-                    elif desired_command == "STOP":
+                    elif validation_aligned:
                         alignment_active = False
                         alignment_state = "ALIGNED"
                         current_command = "STOP"
@@ -259,9 +315,28 @@ def run_alignment_validation(args: argparse.Namespace) -> None:
                             tag_center_x,
                             image_center_x,
                             error_x,
+                            orientation_error_deg,
                             current_command,
                             alignment_state,
                         )
+                    elif desired_command == "STOP":
+                        # Position is centered, but orientation remains outside
+                        # tolerance. This validation phase reports the condition
+                        # without adding new production correction behavior.
+                        alignment_state = "ALIGNING_ORIENTATION"
+                        current_command = "STOP"
+                        if (
+                            now - last_diagnostic_log_time
+                        ) >= args.diagnostic_log_interval:
+                            log_alignment(
+                                tag_center_x,
+                                image_center_x,
+                                error_x,
+                                orientation_error_deg,
+                                current_command,
+                                alignment_state,
+                            )
+                            last_diagnostic_log_time = now
                     else:
                         alignment_state = "ALIGNING"
 
@@ -282,6 +357,7 @@ def run_alignment_validation(args: argparse.Namespace) -> None:
                                 tag_center_x,
                                 image_center_x,
                                 error_x,
+                                orientation_error_deg,
                                 current_command,
                                 alignment_state,
                             )
@@ -292,9 +368,11 @@ def run_alignment_validation(args: argparse.Namespace) -> None:
                     frame,
                     detection,
                     error_x,
+                    orientation_error_deg,
                     current_command,
                     alignment_state,
                     args.tolerance,
+                    args.orientation_tolerance,
                 )
                 cv2.imshow("AlignmentController Validation", frame)
 
@@ -329,6 +407,12 @@ def parse_args() -> argparse.Namespace:
         help="Finite LEFT/RIGHT correction value sent to ESP32.",
     )
     parser.add_argument(
+        "--orientation-tolerance",
+        type=float,
+        default=3.0,
+        help="Diagnostic AprilTag orientation tolerance in degrees.",
+    )
+    parser.add_argument(
         "--stable-frames",
         type=int,
         default=3,
@@ -339,6 +423,12 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.1,
         help="Seconds between ESP32 motion STATUS queries.",
+    )
+    parser.add_argument(
+        "--diagnostic-log-interval",
+        type=float,
+        default=0.5,
+        help="Seconds between repeated orientation diagnostic logs.",
     )
     return parser.parse_args()
 
