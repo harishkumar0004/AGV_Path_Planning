@@ -30,6 +30,7 @@ class SerialMotorController:
         self.reconnect_delay_sec = reconnect_delay_sec
         self.serial_connection: serial.Serial | None = None
         self.last_command: MotionCommand | None = None
+        self.last_message: str | None = None
 
     def connect(self) -> bool:
         """
@@ -45,6 +46,7 @@ class SerialMotorController:
                 timeout=self.timeout,
             )
             self.last_command = None
+            self.last_message = None
             print(f"Connected to ESP32 on {self.port}")
             return True
         except serial.SerialException as error:
@@ -52,23 +54,56 @@ class SerialMotorController:
             self.serial_connection = None
             return False
 
-    def send_command(self, command: MotionCommand) -> bool:
+    def send_command(
+        self,
+        command: MotionCommand,
+        value: float | int | None = None,
+        force: bool = False,
+    ) -> bool:
         """
         Send one motion command if it changed from the previous command.
 
         Args:
             command: Motion command to send to ESP32.
+            value: Optional numeric command value, for example TURN_RIGHT 30.
+            force: True to transmit even if the command matches the previous one.
 
         Returns:
             True if command is already sent or successfully transmitted.
         """
-        if command == self.last_command:
+        message = self._format_message(command, value)
+
+        if not force and message == self.last_message:
             return True
 
         if not self._ensure_connected():
             return False
 
-        return self._write_command(command)
+        return self._write_message(message, command)
+
+    def send_raw_command(self, message: str, force: bool = True) -> bool:
+        """
+        Send a raw newline-terminated command string to ESP32.
+
+        Args:
+            message: Text command, such as TURN_RIGHT 20.
+            force: True to transmit even if it matches the previous message.
+
+        Returns:
+            True if command is already sent or successfully transmitted.
+        """
+        formatted_message = message.strip()
+
+        if not formatted_message:
+            return False
+
+        if not force and formatted_message == self.last_message:
+            return True
+
+        if not self._ensure_connected():
+            return False
+
+        return self._write_message(formatted_message)
 
     def disconnect(self) -> None:
         """Close the serial connection."""
@@ -78,6 +113,7 @@ class SerialMotorController:
 
         self.serial_connection = None
         self.last_command = None
+        self.last_message = None
 
     def _ensure_connected(self) -> bool:
         """
@@ -93,12 +129,37 @@ class SerialMotorController:
         time.sleep(self.reconnect_delay_sec)
         return self.connect()
 
-    def _write_command(self, command: MotionCommand) -> bool:
+    def _format_message(
+        self,
+        command: MotionCommand,
+        value: float | int | None,
+    ) -> str:
+        """
+        Convert a command and optional value into the serial protocol text.
+
+        Args:
+            command: Motion command to transmit.
+            value: Optional numeric command value.
+
+        Returns:
+            Human-readable serial message without the newline.
+        """
+        if value is None:
+            return command.value
+
+        return f"{command.value} {value:g}"
+
+    def _write_message(
+        self,
+        message: str,
+        command: MotionCommand | None = None,
+    ) -> bool:
         """
         Write one newline-terminated text command to ESP32.
 
         Args:
-            command: Motion command to transmit.
+            message: Command message to transmit without newline.
+            command: Optional MotionCommand used for compatibility tracking.
 
         Returns:
             True if transmission succeeds, otherwise False.
@@ -107,11 +168,12 @@ class SerialMotorController:
             return False
 
         try:
-            message = f"{command.value}\n"
-            self.serial_connection.write(message.encode("utf-8"))
+            serial_message = f"{message}\n"
+            self.serial_connection.write(serial_message.encode("utf-8"))
             self.serial_connection.flush()
             self.last_command = command
-            print(f"TX: {command.value}")
+            self.last_message = message
+            print(f"TX: {message}")
             return True
         except serial.SerialException as error:
             print(f"Serial write failed: {error}")

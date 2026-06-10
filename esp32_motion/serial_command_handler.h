@@ -25,6 +25,7 @@ private:
   String _command_buffer;
 
   void processCommand(String command);
+  float getCommandValue(String command, float default_value) const;
   void checkSerialSafety();
 };
 
