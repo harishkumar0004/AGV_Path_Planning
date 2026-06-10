@@ -25,3 +25,6 @@ class NavigationMetrics:
 
     # Latest route or motion action text.
     current_action: str = "None"
+
+    # Latest horizontal alignment error in pixels.
+    alignment_error_px: float | None = None

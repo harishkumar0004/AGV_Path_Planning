@@ -14,11 +14,7 @@ class AlignmentController:
         """
         self.center_tolerance_px = center_tolerance_px
 
-    def decide(
-        self,
-        frame_center_x: float,
-        tag_center_x: float | None,
-    ) -> MotionCommand:
+    def decide(self, frame_center_x: float, tag_center_x: float | None) -> MotionCommand:
         """
         Decide the motion command from the horizontal AprilTag position.
 

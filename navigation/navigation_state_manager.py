@@ -21,6 +21,8 @@ class NavigationStateManager:
         tag_id: int | None,
         start_pressed: bool = False,
         motion_complete: bool = False,
+        alignment_complete: bool = False,
+        tag_visible: bool = True,
     ) -> MotionCommand | None:
         """
         Update navigation state and return a command only on transitions.
@@ -29,6 +31,8 @@ class NavigationStateManager:
             tag_id: Currently visible AprilTag ID, or None.
             start_pressed: True when operator pressed F.
             motion_complete: True when the current motor motion is complete.
+            alignment_complete: True when the turn tag is centered.
+            tag_visible: True when the turn tag remains visible during alignment.
 
         Returns:
             MotionCommand to send once, otherwise None.
@@ -41,6 +45,9 @@ class NavigationStateManager:
 
         if self.state == NavigationState.PREPARE_TURN:
             return self._handle_prepare_turn(tag_id)
+
+        if self.state == NavigationState.ALIGNING:
+            return self._handle_aligning(alignment_complete, tag_visible)
 
         if self.state == NavigationState.TURNING:
             return self._handle_turning(tag_id, motion_complete)
@@ -83,18 +90,47 @@ class NavigationStateManager:
         return self.current_action
 
     def _handle_prepare_turn(self, tag_id: int | None) -> MotionCommand | None:
-        """Stop forward motion when the turn marker Tag 3 is reached."""
+        """Enter alignment when the turn marker Tag 3 is reached."""
         if tag_id != 3:
             return None
 
         if self.stop_before_turn_sent:
             return None
 
+        self.state = NavigationState.ALIGNING
+        self.status_message = "Aligning on Tag 3"
+        print("Detected Tag: 3")
+        print("Entering ALIGNING")
+        return None
+
+    def _handle_aligning(
+        self,
+        alignment_complete: bool,
+        tag_visible: bool,
+    ) -> MotionCommand | None:
+        """
+        Wait until the turn tag is centered before stopping for the turn.
+
+        Args:
+            alignment_complete: True when horizontal error is within threshold.
+            tag_visible: True when Tag 3 is still visible.
+
+        Returns:
+            STOP once alignment is complete, otherwise None.
+        """
+        if not tag_visible:
+            self.status_message = "Aligning - Tag 3 Lost"
+            return None
+
+        if not alignment_complete:
+            self.status_message = "Aligning on Tag 3"
+            return None
+
         self.state = NavigationState.TURNING
         self.stop_before_turn_sent = True
         self.current_action = MotionCommand.STOP
         self.status_message = "Stopping before turn"
-        print("Detected Tag: 3")
+        print("Alignment Complete")
         print("Executing STOP")
         return self.current_action
 

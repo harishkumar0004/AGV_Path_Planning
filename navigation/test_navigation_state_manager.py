@@ -4,6 +4,7 @@ import cv2
 
 from communication.serial_motor_controller import SerialMotorController
 from core.application_state import ApplicationState
+from navigation.alignment_controller import AlignmentController
 from navigation.motion_commands import MotionCommand
 from navigation.navigation_state import NavigationState
 from navigation.navigation_state_manager import NavigationStateManager
@@ -14,6 +15,7 @@ def draw_overlay(
     frame,
     navigation_manager: NavigationStateManager,
     tag_id: int | None,
+    alignment_error: float | None,
 ) -> None:
     """
     Draw navigation status on the camera frame.
@@ -22,6 +24,7 @@ def draw_overlay(
         frame: Camera image to annotate.
         navigation_manager: Navigation manager containing current state/action.
         tag_id: Current visible AprilTag ID, or None.
+        alignment_error: Horizontal Tag 3 alignment error in pixels.
     """
     action_text = (
         navigation_manager.current_action.name
@@ -33,6 +36,7 @@ def draw_overlay(
         f"State: {navigation_manager.state.name}",
         f"Tag ID: {tag_id}",
         f"Action: {action_text}",
+        f"Alignment Error: {alignment_error}",
         navigation_manager.status_message,
     ]
 
@@ -55,9 +59,13 @@ def main() -> None:
     application_state = ApplicationState()
     perception_manager = PerceptionManager(application_state)
     navigation_manager = NavigationStateManager()
+    alignment_controller = AlignmentController(center_tolerance_px=10.0)
     serial_controller = SerialMotorController()
     stop_time: float | None = None
+    last_alignment_command: MotionCommand | None = None
+    last_alignment_command_time = 0.0
     stop_to_turn_delay_sec = 0.5
+    alignment_command_interval_sec = 0.5
 
     if not perception_manager.initialize():
         print("PerceptionManager failed to initialize camera.")
@@ -91,17 +99,52 @@ def main() -> None:
             else:
                 stop_time = None
 
+            alignment_error: float | None = None
+            alignment_complete = False
+            alignment_command: MotionCommand | None = None
+            turn_tag_visible = tag_id == 3
+
+            if navigation_manager.state == NavigationState.ALIGNING:
+                if turn_tag_visible and frame is not None and perception.center_x is not None:
+                    alignment_result = alignment_controller.calculate(
+                        image_width=frame.shape[1],
+                        tag_center_x=perception.center_x,
+                    )
+                    alignment_error = alignment_result.error_x
+                    alignment_complete = abs(alignment_error) <= 10.0
+                    print(f"Alignment Error: {alignment_error:.1f}")
+
+                    if not alignment_complete:
+                        alignment_command = alignment_result.action
+                else:
+                    alignment_command = MotionCommand.STOP
+
             command = navigation_manager.update(
                 tag_id=tag_id,
                 start_pressed=start_pressed,
                 motion_complete=motion_complete,
+                alignment_complete=alignment_complete,
+                tag_visible=turn_tag_visible,
             )
 
             if command is not None:
+                last_alignment_command = None
                 serial_controller.send_command(command)
+            elif alignment_command is not None:
+                now = time.monotonic()
+                alignment_due = (
+                    alignment_command != last_alignment_command
+                    or (now - last_alignment_command_time)
+                    >= alignment_command_interval_sec
+                )
+
+                if alignment_due:
+                    serial_controller.send_command(alignment_command)
+                    last_alignment_command = alignment_command
+                    last_alignment_command_time = now
 
             if frame is not None:
-                draw_overlay(frame, navigation_manager, tag_id)
+                draw_overlay(frame, navigation_manager, tag_id, alignment_error)
                 cv2.imshow("AGV Navigation State Manager", frame)
 
             if key == ord("q"):

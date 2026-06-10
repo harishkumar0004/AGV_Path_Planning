@@ -81,6 +81,15 @@ class PerformanceMonitor:
         self.metrics.navigation_state = state_name
         self.metrics.current_action = action_name
 
+    def record_alignment_error(self, error_px: float | None) -> None:
+        """
+        Store the latest horizontal turn-tag alignment error.
+
+        Args:
+            error_px: Pixel error from image center, or None when unavailable.
+        """
+        self.metrics.alignment_error_px = error_px
+
     def record_command_generated(self, command: MotionCommand) -> None:
         """
         Record the time when a command was generated.
