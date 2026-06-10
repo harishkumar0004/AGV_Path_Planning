@@ -13,6 +13,124 @@ from perception.perception_manager import PerceptionManager
 from validation.performance_monitor import PerformanceMonitor
 
 
+def draw_alignment_guides(
+    frame,
+    detections: list[dict],
+    alignment_tolerance_px: float,
+) -> None:
+    """
+    Draw camera center references and AprilTag alignment diagnostics.
+
+    Args:
+        frame: Camera image to annotate.
+        detections: AprilTag detections from PerceptionManager.
+        alignment_tolerance_px: Pixel threshold used for ALIGNED status.
+    """
+    image_height, image_width = frame.shape[:2]
+    center_x = image_width // 2
+    center_y = image_height // 2
+
+    # Draw camera center reference lines.
+    cv2.line(frame, (center_x, 0), (center_x, image_height), (0, 255, 255), 1)
+    cv2.line(frame, (0, center_y), (image_width, center_y), (0, 255, 255), 1)
+
+    # Draw a small crosshair at the image center.
+    cv2.drawMarker(
+        frame,
+        (center_x, center_y),
+        (0, 255, 255),
+        markerType=cv2.MARKER_CROSS,
+        markerSize=20,
+        thickness=2,
+    )
+
+    cv2.putText(
+        frame,
+        f"Image Center: ({center_x}, {center_y})",
+        (image_width - 300, 30),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        (0, 255, 255),
+        2,
+    )
+
+    if not detections:
+        cv2.putText(
+            frame,
+            "Alignment Status: NO TAG",
+            (image_width - 300, 60),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (0, 0, 255),
+            2,
+        )
+        return
+
+    detection = detections[0]
+    tag_center_x = int(detection["center_x"])
+    tag_center_y = int(detection["center_y"])
+    error_x = tag_center_x - center_x
+    error_y = tag_center_y - center_y
+    status = "ALIGNED" if abs(error_x) <= alignment_tolerance_px else "ALIGNING"
+    status_color = (0, 255, 0) if status == "ALIGNED" else (0, 165, 255)
+
+    # Draw AprilTag boundary.
+    corners = [
+        (int(corner_x), int(corner_y))
+        for corner_x, corner_y in detection["corners"]
+    ]
+    for index, corner in enumerate(corners):
+        next_corner = corners[(index + 1) % len(corners)]
+        cv2.line(frame, corner, next_corner, (0, 255, 0), 2)
+
+    # Draw tag center and visual alignment error line.
+    cv2.circle(frame, (tag_center_x, tag_center_y), 5, (0, 0, 255), -1)
+    cv2.line(
+        frame,
+        (center_x, center_y),
+        (tag_center_x, tag_center_y),
+        (255, 0, 255),
+        2,
+    )
+
+    cv2.putText(
+        frame,
+        f"Tag Center: ({tag_center_x}, {tag_center_y})",
+        (image_width - 300, 60),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        (255, 255, 255),
+        2,
+    )
+    cv2.putText(
+        frame,
+        f"Center Error X: {error_x} px",
+        (image_width - 300, 90),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        (255, 255, 255),
+        2,
+    )
+    cv2.putText(
+        frame,
+        f"Center Error Y: {error_y} px",
+        (image_width - 300, 120),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        (255, 255, 255),
+        2,
+    )
+    cv2.putText(
+        frame,
+        f"Alignment Status: {status}",
+        (image_width - 300, 150),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        status_color,
+        2,
+    )
+
+
 def send_motion_command(
     serial_controller: SerialMotorController,
     command: MotionCommand,
@@ -120,7 +238,7 @@ def main() -> None:
     try:
         while True:
             monitor.record_camera_frame()
-            perception_manager.update()
+            detections = perception_manager.update()
             monitor.record_detection_cycle()
 
             frame = perception_manager.last_frame
@@ -217,6 +335,11 @@ def main() -> None:
                     last_alignment_command_time = now
 
             if frame is not None:
+                draw_alignment_guides(
+                    frame,
+                    detections,
+                    args.alignment_tolerance,
+                )
                 draw_metrics_overlay(frame, monitor)
                 cv2.imshow("AGV Navigation Performance", frame)
 
