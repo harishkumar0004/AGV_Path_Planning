@@ -3,17 +3,23 @@
 
 const float DEFAULT_TURN_LEFT_VALUE = 10.0;
 const float DEFAULT_TURN_RIGHT_VALUE = 10.0;
+const float VALIDATION_STEERING_FREQUENCY_HZ = 2000.0;
+const uint32_t DEFAULT_STEERING_PULSE_MS = 100;
 
 
 SerialCommandHandler::SerialCommandHandler(
   HardwareSerial &serial,
   MotionController &motion_controller,
-  uint32_t command_timeout_ms
+  uint32_t command_timeout_ms,
+  DifferentialDrive *validation_drive
 ) : _serial(serial), _motion_controller(motion_controller) {
+  _validation_drive = validation_drive;
   _command_timeout_ms = command_timeout_ms;
   _last_command_ms = 0;
   _has_received_command = false;
   _command_buffer = "";
+  _validation_pulse_active = false;
+  _validation_pulse_end_ms = 0;
 }
 
 
@@ -24,6 +30,8 @@ void SerialCommandHandler::begin(uint32_t baudrate) {
 
 
 void SerialCommandHandler::update() {
+  updateValidationSteeringPulse();
+
   while (_serial.available() > 0) {
     char incoming_char = (char)_serial.read();
 
@@ -36,6 +44,11 @@ void SerialCommandHandler::update() {
   }
 
   checkSerialSafety();
+}
+
+
+bool SerialCommandHandler::isValidationPulseActive() const {
+  return _validation_pulse_active;
 }
 
 
@@ -61,7 +74,31 @@ void SerialCommandHandler::processCommand(String command) {
 
   if (command_name == "STATUS") {
     _serial.print("STATUS: ");
-    _serial.println(_motion_controller.isRunning() ? "RUNNING" : "IDLE");
+    _serial.println(
+      (_motion_controller.isRunning() || _validation_pulse_active)
+        ? "RUNNING"
+        : "IDLE"
+    );
+    return;
+  }
+
+  if (command_name == "LEFT_PULSE") {
+    uint32_t duration_ms =
+      (uint32_t)getCommandValue(command, DEFAULT_STEERING_PULSE_MS);
+    _serial.print("Validation Pulse: LEFT ");
+    _serial.print(duration_ms);
+    _serial.println(" ms");
+    startValidationSteeringPulse(true, duration_ms);
+    return;
+  }
+
+  if (command_name == "RIGHT_PULSE") {
+    uint32_t duration_ms =
+      (uint32_t)getCommandValue(command, DEFAULT_STEERING_PULSE_MS);
+    _serial.print("Validation Pulse: RIGHT ");
+    _serial.print(duration_ms);
+    _serial.println(" ms");
+    startValidationSteeringPulse(false, duration_ms);
     return;
   }
 
@@ -80,6 +117,10 @@ void SerialCommandHandler::processCommand(String command) {
   if (command_name == "STOP") {
     _serial.println("Motion Mode: STOPPING");
     _serial.println("Executing stop()");
+    if (_validation_drive != nullptr) {
+      _validation_drive->stop();
+    }
+    _validation_pulse_active = false;
     _motion_controller.stop();
     return;
   }
@@ -163,4 +204,53 @@ void SerialCommandHandler::checkSerialSafety() {
     _motion_controller.stop();
     _has_received_command = false;
   }
+}
+
+
+void SerialCommandHandler::startValidationSteeringPulse(
+  bool turn_left,
+  uint32_t duration_ms
+) {
+  if (_validation_drive == nullptr) {
+    _serial.println(
+      "Warning: validation drive is not configured for pulse commands."
+    );
+    return;
+  }
+
+  if (duration_ms == 0) {
+    _serial.println("Warning: pulse duration must be greater than 0 ms.");
+    return;
+  }
+
+  _motion_controller.stop();
+  _validation_drive->stop();
+  _validation_drive->setFrequency(VALIDATION_STEERING_FREQUENCY_HZ);
+
+  if (turn_left) {
+    _validation_drive->turnLeft(0);
+  } else {
+    _validation_drive->turnRight(0);
+  }
+
+  _validation_pulse_active = true;
+  _validation_pulse_end_ms = millis() + duration_ms;
+
+  _serial.print("Correction Frequency Hz: ");
+  _serial.println(VALIDATION_STEERING_FREQUENCY_HZ);
+}
+
+
+void SerialCommandHandler::updateValidationSteeringPulse() {
+  if (!_validation_pulse_active || _validation_drive == nullptr) {
+    return;
+  }
+
+  if ((long)(millis() - _validation_pulse_end_ms) < 0) {
+    return;
+  }
+
+  _validation_drive->stop();
+  _validation_pulse_active = false;
+  _serial.println("Validation Pulse Complete: STOP");
 }

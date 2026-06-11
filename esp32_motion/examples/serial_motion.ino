@@ -37,7 +37,7 @@ StepGenerator right_motor(
 
 DifferentialDrive drive(left_motor, right_motor);
 MotionController motion_controller(motor_config, drive);
-SerialCommandHandler serial_handler(Serial, motion_controller, 0);
+SerialCommandHandler serial_handler(Serial, motion_controller, 0, &drive);
 
 
 void setup() {
@@ -46,11 +46,15 @@ void setup() {
 
   Serial.println("ESP32 serial motion example started");
   Serial.println("Commands: START_FORWARD, START_SLOW_FORWARD, STOP, TURN_LEFT, TURN_RIGHT, STATUS");
+  Serial.println("Validation pulses: LEFT_PULSE 100, RIGHT_PULSE 100");
   Serial.println("Calibration: TURN_RIGHT 10, TURN_RIGHT 20, TURN_RIGHT 30, ...");
 }
 
 
 void loop() {
   serial_handler.update();
-  motion_controller.update();
+
+  if (!serial_handler.isValidationPulseActive()) {
+    motion_controller.update();
+  }
 }

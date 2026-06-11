@@ -5,22 +5,16 @@ import sys
 import time
 from typing import Any
 
-DEPENDENCY_ERROR: ModuleNotFoundError | None = None
 
-try:
-    import cv2
+import cv2
 
-    from communication.serial_motor_controller import SerialMotorController
-    from core.application_state import ApplicationState
-    from perception.perception_manager import PerceptionManager
-except ModuleNotFoundError as error:
-    DEPENDENCY_ERROR = error
+from communication.serial_motor_controller import SerialMotorController
+from core.application_state import ApplicationState
+from perception.perception_manager import PerceptionManager
 
 
-def choose_correction_command(
-    error_x: float | None,
-    deadband_px: float,
-) -> str:
+
+def choose_correction_command(error_x: float | None, deadband_px: float,) -> str:
     """
     Choose a continuous-correction command label from horizontal error.
 
@@ -363,15 +357,10 @@ if __name__ == "__main__":
         parse_args()
         raise SystemExit(0)
 
-    if DEPENDENCY_ERROR is not None:
-        print(
-            "Continuous correction validation cannot start because a required "
-            f"dependency is missing: {DEPENDENCY_ERROR.name}"
-        )
-        print(
+    print(
             "Run this validation in the Raspberry Pi environment containing "
             "OpenCV, pyserial, Picamera2, and pupil_apriltags."
         )
-        raise SystemExit(1)
+    raise SystemExit(1)
 
     run_continuous_correction(parse_args())
