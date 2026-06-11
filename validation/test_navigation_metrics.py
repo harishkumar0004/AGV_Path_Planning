@@ -46,8 +46,8 @@ class PulseCorrectionController:
         self,
         center_deadband_px: float = 15.0,
         medium_error_px: float = 50.0,
-        medium_pulse_ms: int = 200,
-        large_pulse_ms: int = 300,
+        medium_pulse_ms: int = 100,
+        large_pulse_ms: int = 150,
         cooldown_margin_ms: int = 50,
     ) -> None:
         """
