@@ -3,6 +3,7 @@
 #include "differential_drive.h"
 #include "motion_controller.h"
 #include "serial_command_handler.h"
+#include "imu_manager.h"
 
 
 const uint8_t LEFT_STEP_PIN = 4;
@@ -38,6 +39,10 @@ StepGenerator right_motor(
 DifferentialDrive drive(left_motor, right_motor);
 MotionController motion_controller(motor_config, drive);
 SerialCommandHandler serial_handler(Serial, motion_controller, 0, &drive);
+ImuManager imu_manager;
+
+const uint32_t IMU_PRINT_INTERVAL_MS = 100;
+uint32_t last_imu_print_ms = 0;
 
 
 void setup() {
@@ -48,6 +53,13 @@ void setup() {
   Serial.println("Commands: START_FORWARD, START_SLOW_FORWARD, STOP, TURN_LEFT, TURN_RIGHT, STATUS");
   Serial.println("Validation pulses: LEFT_PULSE 100, RIGHT_PULSE 100");
   Serial.println("Calibration: TURN_RIGHT 10, TURN_RIGHT 20, TURN_RIGHT 30, ...");
+
+  Serial.println("BOOT");
+  if (!imu_manager.begin()) {
+    Serial.println("IMU_ERROR");
+  } else {
+    Serial.println("IMU_CALIBRATING");
+  }
 }
 
 
@@ -56,5 +68,13 @@ void loop() {
 
   if (!serial_handler.isValidationPulseActive()) {
     motion_controller.update();
+  }
+
+  imu_manager.update();
+
+  uint32_t now_ms = millis();
+  if ((uint32_t)(now_ms - last_imu_print_ms) >= IMU_PRINT_INTERVAL_MS) {
+    imu_manager.printHeadingSerial(Serial);
+    last_imu_print_ms = now_ms;
   }
 }
