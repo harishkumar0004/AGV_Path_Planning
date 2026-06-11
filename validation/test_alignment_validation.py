@@ -1,15 +1,22 @@
+from __future__ import annotations
+
 import argparse
 import math
 import time
 from typing import Any
 
-import cv2
+DEPENDENCY_ERROR: ModuleNotFoundError | None = None
 
-from communication.serial_motor_controller import SerialMotorController
-from core.application_state import ApplicationState
-from navigation.alignment_controller import AlignmentController
-from navigation.motion_commands import MotionCommand
-from perception.perception_manager import PerceptionManager
+try:
+    import cv2
+
+    from communication.serial_motor_controller import SerialMotorController
+    from core.application_state import ApplicationState
+    from navigation.alignment_controller import AlignmentController
+    from navigation.motion_commands import MotionCommand
+    from perception.perception_manager import PerceptionManager
+except ModuleNotFoundError as error:
+    DEPENDENCY_ERROR = error
 
 
 def correction_name(action: MotionCommand) -> str:
@@ -39,7 +46,7 @@ def calculate_tag_orientation_deg(detection: dict[str, Any] | None) -> float | N
         detection: AprilTag detection containing corner coordinates, or None.
 
     Returns:
-        Signed top-edge orientation angle in degrees, or None.
+        Signed orientation error in the range -90 to +90 degrees, or None.
     """
     if detection is None:
         return None
@@ -53,7 +60,11 @@ def calculate_tag_orientation_deg(detection: dict[str, Any] | None) -> float | N
     dx = x1 - x0
     dy = y1 - y0
 
-    return math.degrees(math.atan2(dy, dx))
+    raw_angle_deg = math.degrees(math.atan2(dy, dx))
+
+    # A line at 180 degrees is physically horizontal like a line at 0 degrees.
+    # Normalize to the nearest horizontal orientation for diagnostic comparison.
+    return ((raw_angle_deg + 90.0) % 180.0) - 90.0
 
 
 def draw_validation_overlay(
@@ -434,4 +445,15 @@ def parse_args() -> argparse.Namespace:
 
 
 if __name__ == "__main__":
+    if DEPENDENCY_ERROR is not None:
+        print(
+            "Alignment validation cannot start because a required dependency "
+            f"is missing: {DEPENDENCY_ERROR.name}"
+        )
+        print(
+            "Run this validation in the Raspberry Pi environment containing "
+            "OpenCV, pyserial, Picamera2, and pupil_apriltags."
+        )
+        raise SystemExit(1)
+
     run_alignment_validation(parse_args())
