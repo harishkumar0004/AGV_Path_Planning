@@ -74,7 +74,7 @@ class ImuSerialReader:
                     errors="replace",
                 ).strip()
 
-                if self._parse_line(line):
+                if self.parse_line(line):
                     parsed_heading = True
 
             return parsed_heading
@@ -115,7 +115,42 @@ class ImuSerialReader:
         time.sleep(self.reconnect_delay_sec)
         return self.connect()
 
-    def _parse_line(self, line: str) -> bool:
+    def update_from_connection(self, serial_connection: serial.Serial | None) -> bool:
+        """
+        Read heading lines from an already-open serial connection.
+
+        This is useful when another validation tool already owns the ESP32
+        command serial port.
+
+        Args:
+            serial_connection: Existing pyserial connection.
+
+        Returns:
+            True when a new HEADING value was parsed.
+        """
+        if serial_connection is None or not serial_connection.is_open:
+            self.latest_status = "DISCONNECTED"
+            return False
+
+        parsed_heading = False
+
+        try:
+            while serial_connection.in_waiting > 0:
+                line = serial_connection.readline().decode(
+                    "utf-8",
+                    errors="replace",
+                ).strip()
+
+                if self.parse_line(line):
+                    parsed_heading = True
+
+            return parsed_heading
+        except serial.SerialException as error:
+            print(f"IMU serial read failed: {error}")
+            self.latest_status = "DISCONNECTED"
+            return False
+
+    def parse_line(self, line: str) -> bool:
         """
         Parse one ESP32 serial line.
 

@@ -15,6 +15,7 @@ DEPENDENCY_ERROR: ModuleNotFoundError | None = None
 try:
     import cv2
 
+    from communication.imu_serial_reader import ImuSerialReader
     from communication.serial_motor_controller import SerialMotorController
     from core.application_state import ApplicationState
     from navigation.alignment_controller import AlignmentController
@@ -340,6 +341,16 @@ def draw_metrics_overlay(
         if metrics.alignment_error_px is not None
         else "None"
     )
+    heading_text = (
+        f"{metrics.current_heading_deg:.2f} deg"
+        if metrics.current_heading_deg is not None
+        else "None"
+    )
+    drift_text = (
+        f"{metrics.latest_drift_deg:+.2f} deg"
+        if metrics.latest_drift_deg is not None
+        else "None"
+    )
 
     image_center_text = "None"
     tag_center_text = "None"
@@ -373,6 +384,8 @@ def draw_metrics_overlay(
         f"Tag Center X: {tag_center_text}",
         f"Image Center X: {image_center_text}",
         f"Error X: {error_text}",
+        f"Heading: {heading_text}",
+        f"Latest Drift: {drift_text}",
         f"Current Correction Command: {current_correction_command}",
         f"Command Latency: {latency_text}",
         monitor.get_tag_count_text(),
@@ -405,6 +418,11 @@ def main() -> None:
         port=args.port,
         baudrate=args.baudrate,
     )
+    imu_reader = ImuSerialReader(
+        port=args.port,
+        baudrate=args.baudrate,
+        timeout=0.0,
+    )
     monitor = PerformanceMonitor()
     pulse_controller = PulseCorrectionController(
         center_deadband_px=args.pulse_deadband,
@@ -430,6 +448,9 @@ def main() -> None:
         perception_manager.release()
         return
 
+    drift_csv_path = Path(args.drift_csv).expanduser().resolve()
+    monitor.initialize_drift_csv(drift_csv_path)
+
     try:
         while True:
             current_frame_time = time.monotonic()
@@ -442,11 +463,19 @@ def main() -> None:
             monitor.record_camera_frame()
             detections = perception_manager.update()
             monitor.record_detection_cycle()
+            imu_reader.update_from_connection(serial_controller.serial_connection)
+            current_heading = imu_reader.get_heading()
+            monitor.record_heading(current_heading)
 
             frame = perception_manager.last_frame
             perception = application_state.perception
             tag_id = perception.tag_id if perception.tag_visible else None
             monitor.record_tag_detection(tag_id)
+            monitor.record_tag_heading(
+                tag_id=tag_id,
+                heading_deg=current_heading,
+                csv_path=drift_csv_path,
+            )
 
             key = cv2.waitKey(1) & 0xFF
             start_pressed = key == ord("f") or key == ord("F")
@@ -625,6 +654,7 @@ def main() -> None:
         serial_controller.send_command(MotionCommand.STOP)
         serial_controller.disconnect()
         perception_manager.release()
+        monitor.print_drift_summary()
         cv2.destroyAllWindows()
 
 
@@ -693,6 +723,11 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=50,
         help="Extra cooldown after each correction pulse.",
+    )
+    parser.add_argument(
+        "--drift-csv",
+        default="validation/drift_log.csv",
+        help="CSV file used to store tag heading drift measurements.",
     )
     return parser.parse_args()
 

@@ -28,3 +28,9 @@ class NavigationMetrics:
 
     # Latest horizontal alignment error in pixels.
     alignment_error_px: float | None = None
+
+    # Latest IMU relative heading received from ESP32.
+    current_heading_deg: float | None = None
+
+    # Latest measured drift between two detected route tags.
+    latest_drift_deg: float | None = None
