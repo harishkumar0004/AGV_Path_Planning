@@ -243,16 +243,16 @@ def choose_orientation_state(
         return "ALIGNED"
 
     if current_state == "ALIGNING_LEFT" and orientation_deg > stop_tolerance_deg:
-        return "ALIGNING_LEFT"
+        return "ALIGNING_RIGHT"
 
     if current_state == "ALIGNING_RIGHT" and orientation_deg < -stop_tolerance_deg:
-        return "ALIGNING_RIGHT"
-
-    if orientation_deg > start_threshold_deg:
         return "ALIGNING_LEFT"
 
-    if orientation_deg < -start_threshold_deg:
+    if orientation_deg > start_threshold_deg:
         return "ALIGNING_RIGHT"
+
+    if orientation_deg < -start_threshold_deg:
+        return "ALIGNING_LEFT"
 
     return current_state
 
@@ -328,7 +328,7 @@ def evaluate_start_gate(
     )
     position_pass = (
         measurement.position_error_x is not None
-        and abs(measurement.position_error_x) <= 10.0
+        and abs(measurement.position_error_x) <= 6.0
     )
     heading_pass = heading_error_deg is not None and abs(heading_error_deg) <= 0.5
 
