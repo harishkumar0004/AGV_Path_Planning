@@ -123,6 +123,24 @@ void SerialCommandHandler::processCommand(String command) {
     return;
   }
 
+  if (command_name == "START_LEFT_CORRECTION") {
+    _serial.println("Validation Correction: START_LEFT_CORRECTION");
+    startValidationSteeringCorrection(true);
+    return;
+  }
+
+  if (command_name == "START_RIGHT_CORRECTION") {
+    _serial.println("Validation Correction: START_RIGHT_CORRECTION");
+    startValidationSteeringCorrection(false);
+    return;
+  }
+
+  if (command_name == "STOP_CORRECTION") {
+    _serial.println("Validation Correction: STOP_CORRECTION");
+    stopValidationSteeringCorrection();
+    return;
+  }
+
   if (command_name == "START_FORWARD") {
     _serial.println("Motion Mode: FORWARD_MODE");
     _motion_controller.startForwardMode();
@@ -139,9 +157,8 @@ void SerialCommandHandler::processCommand(String command) {
     _serial.println("Motion Mode: STOPPING");
     _serial.println("Executing stop()");
     if (_validation_drive != nullptr) {
-      _validation_drive->stop();
+      stopValidationSteeringCorrection();
     }
-    _validation_pulse_active = false;
     _motion_controller.stop();
     return;
   }
@@ -262,8 +279,48 @@ void SerialCommandHandler::startValidationSteeringPulse(
 }
 
 
+void SerialCommandHandler::startValidationSteeringCorrection(bool turn_left) {
+  if (_validation_drive == nullptr) {
+    _serial.println(
+      "Warning: validation drive is not configured for correction commands."
+    );
+    return;
+  }
+
+  _motion_controller.stop();
+  _validation_drive->stop();
+  _validation_drive->setFrequency(VALIDATION_STEERING_FREQUENCY_HZ);
+
+  if (turn_left) {
+    _validation_drive->turnLeft(0);
+  } else {
+    _validation_drive->turnRight(0);
+  }
+
+  _validation_pulse_active = true;
+  _validation_pulse_end_ms = 0;
+
+  _serial.print("Correction Frequency Hz: ");
+  _serial.println(VALIDATION_STEERING_FREQUENCY_HZ);
+}
+
+
+void SerialCommandHandler::stopValidationSteeringCorrection() {
+  if (_validation_drive != nullptr) {
+    _validation_drive->stop();
+  }
+
+  _validation_pulse_active = false;
+  _validation_pulse_end_ms = 0;
+}
+
+
 void SerialCommandHandler::updateValidationSteeringPulse() {
   if (!_validation_pulse_active || _validation_drive == nullptr) {
+    return;
+  }
+
+  if (_validation_pulse_end_ms == 0) {
     return;
   }
 
@@ -271,7 +328,6 @@ void SerialCommandHandler::updateValidationSteeringPulse() {
     return;
   }
 
-  _validation_drive->stop();
-  _validation_pulse_active = false;
+  stopValidationSteeringCorrection();
   _serial.println("Validation Pulse Complete: STOP");
 }

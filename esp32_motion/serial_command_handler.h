@@ -40,6 +40,8 @@ private:
     bool turn_left,
     uint32_t duration_ms
   );
+  void startValidationSteeringCorrection(bool turn_left);
+  void stopValidationSteeringCorrection();
   void updateValidationSteeringPulse();
 };
 
