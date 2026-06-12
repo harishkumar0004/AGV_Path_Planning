@@ -70,19 +70,11 @@ def choose_orientation_command(
     if orientation_deg is None:
         return "TAG_LOST"
 
-<<<<<<< HEAD
     if abs(orientation_deg) <= stop_tolerance_deg:
         return "ALIGNED"
 
     if current_state == "ALIGNING_LEFT" and orientation_deg > stop_tolerance_deg:
         return "ALIGNING_LEFT"
-=======
-    if orientation_deg > tolerance_deg:
-        return f"RIGHT_PULSE {pulse_ms}"
-
-    if orientation_deg < -tolerance_deg:
-        return f"LEFT_PULSE {pulse_ms}"
->>>>>>> 5f30a0d (ommit Pi commits)
 
     if current_state == "ALIGNING_RIGHT" and orientation_deg < -stop_tolerance_deg:
         return "ALIGNING_RIGHT"
@@ -360,11 +352,7 @@ def parse_args() -> argparse.Namespace:
         "--tolerance",
         type=float,
         default=2.0,
-<<<<<<< HEAD
         help="Stop correction when absolute orientation is within this value.",
-=======
-        help="Orientation tolerance in degrees.",
->>>>>>> 5f30a0d (ommit Pi commits)
     )
     parser.add_argument(
         "--start-threshold",
