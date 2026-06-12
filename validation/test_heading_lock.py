@@ -5,6 +5,7 @@ import csv
 import math
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -25,15 +26,110 @@ except ModuleNotFoundError as error:
     DEPENDENCY_ERROR = error
 
 
+@dataclass
+class TagMeasurement:
+    """Stores camera-side AprilTag measurements for display and logging."""
+
+    tag_id: int | None
+    tag_center_x: float | None
+    tag_center_y: float | None
+    image_center_x: float | None
+    image_center_y: float | None
+    position_error_x: float | None
+    orientation_deg: float | None
+
+
+class HeadingDriftLogger:
+    """Logs natural heading drift while the AGV moves forward."""
+
+    def __init__(self, csv_path: Path) -> None:
+        """
+        Create a fresh heading drift CSV log.
+
+        Args:
+            csv_path: Output CSV path.
+        """
+        self.csv_path = csv_path
+        self.csv_path.parent.mkdir(parents=True, exist_ok=True)
+        self.heading_errors: list[float] = []
+
+        with self.csv_path.open("w", newline="") as csv_file:
+            writer = csv.writer(csv_file)
+            writer.writerow(
+                [
+                    "timestamp_sec",
+                    "reference_heading_deg",
+                    "current_heading_deg",
+                    "heading_error_deg",
+                    "tag_orientation_deg",
+                    "tag_center_x",
+                    "tag_center_y",
+                    "position_error_x",
+                ]
+            )
+
+    def write(
+        self,
+        timestamp_sec: float,
+        reference_heading_deg: float | None,
+        current_heading_deg: float | None,
+        heading_error_deg: float | None,
+        measurement: TagMeasurement,
+    ) -> None:
+        """
+        Append one drift measurement row.
+
+        Args:
+            timestamp_sec: Moving time in seconds.
+            reference_heading_deg: Stored IMU reference heading.
+            current_heading_deg: Latest IMU heading.
+            heading_error_deg: Current heading drift.
+            measurement: Latest AprilTag camera measurement.
+        """
+        if heading_error_deg is not None:
+            self.heading_errors.append(heading_error_deg)
+
+        with self.csv_path.open("a", newline="") as csv_file:
+            writer = csv.writer(csv_file)
+            writer.writerow(
+                [
+                    format_csv(timestamp_sec),
+                    format_csv(reference_heading_deg),
+                    format_csv(current_heading_deg),
+                    format_csv(heading_error_deg),
+                    format_csv(measurement.orientation_deg),
+                    format_csv(measurement.tag_center_x),
+                    format_csv(measurement.tag_center_y),
+                    format_csv(measurement.position_error_x),
+                ]
+            )
+
+    def print_summary(self) -> None:
+        """Print drift statistics for the completed run."""
+        print("Heading Drift Summary")
+        if not self.heading_errors:
+            print("No heading error samples recorded.")
+            return
+
+        absolute_errors = [abs(error) for error in self.heading_errors]
+        maximum_error = max(absolute_errors)
+        average_error = sum(absolute_errors) / len(absolute_errors)
+        final_error = self.heading_errors[-1]
+
+        print(f"Maximum Heading Error: {maximum_error:.2f} deg")
+        print(f"Average Heading Error: {average_error:.2f} deg")
+        print(f"Final Heading Error: {final_error:+.2f} deg")
+
+
 def calculate_tag_orientation_deg(detection: dict[str, Any] | None) -> float | None:
     """
-    Calculate AprilTag orientation from the top edge of its corner coordinates.
+    Calculate AprilTag orientation from corner[0] to corner[1].
 
     Args:
         detection: AprilTag detection dictionary, or None.
 
     Returns:
-        Orientation angle normalized to -90..+90 degrees, or None.
+        Tag orientation normalized to -90..+90 degrees.
     """
     if detection is None:
         return None
@@ -44,10 +140,52 @@ def calculate_tag_orientation_deg(detection: dict[str, Any] | None) -> float | N
 
     x0, y0 = corners[0]
     x1, y1 = corners[1]
-    dx = x1 - x0
-    dy = y1 - y0
-    raw_angle_deg = math.degrees(math.atan2(dy, dx))
+    raw_angle_deg = math.degrees(math.atan2(y1 - y0, x1 - x0))
+
     return ((raw_angle_deg + 90.0) % 180.0) - 90.0
+
+
+def measure_tag(frame, detection: dict[str, Any] | None) -> TagMeasurement:
+    """
+    Build one tag measurement from the current frame and detection.
+
+    Args:
+        frame: Latest camera frame.
+        detection: First visible AprilTag detection.
+
+    Returns:
+        TagMeasurement for overlay and CSV.
+    """
+    if frame is None:
+        return TagMeasurement(None, None, None, None, None, None, None)
+
+    image_height, image_width = frame.shape[:2]
+    image_center_x = image_width / 2
+    image_center_y = image_height / 2
+
+    if detection is None:
+        return TagMeasurement(
+            tag_id=None,
+            tag_center_x=None,
+            tag_center_y=None,
+            image_center_x=image_center_x,
+            image_center_y=image_center_y,
+            position_error_x=None,
+            orientation_deg=None,
+        )
+
+    tag_center_x = float(detection["center_x"])
+    tag_center_y = float(detection["center_y"])
+
+    return TagMeasurement(
+        tag_id=int(detection["tag_id"]),
+        tag_center_x=tag_center_x,
+        tag_center_y=tag_center_y,
+        image_center_x=image_center_x,
+        image_center_y=image_center_y,
+        position_error_x=tag_center_x - image_center_x,
+        orientation_deg=calculate_tag_orientation_deg(detection),
+    )
 
 
 def wrap_angle_deg(angle_deg: float) -> float:
@@ -55,10 +193,10 @@ def wrap_angle_deg(angle_deg: float) -> float:
     Wrap an angle to -180..180 degrees.
 
     Args:
-        angle_deg: Input angle in degrees.
+        angle_deg: Input angle.
 
     Returns:
-        Wrapped angle in degrees.
+        Wrapped angle.
     """
     while angle_deg > 180.0:
         angle_deg -= 360.0
@@ -69,73 +207,6 @@ def wrap_angle_deg(angle_deg: float) -> float:
     return angle_deg
 
 
-class HeadingLockLogger:
-    """Writes heading-lock validation samples to CSV."""
-
-    def __init__(self, csv_path: Path) -> None:
-        """
-        Create a CSV logger.
-
-        Args:
-            csv_path: Output CSV path.
-        """
-        self.csv_path = csv_path
-        self.csv_path.parent.mkdir(parents=True, exist_ok=True)
-        with self.csv_path.open("w", newline="") as csv_file:
-            writer = csv.writer(csv_file)
-            writer.writerow(
-                [
-                    "timestamp_sec",
-                    "reference_heading_deg",
-                    "current_heading_deg",
-                    "heading_error_deg",
-                    "command",
-                    "state",
-                ]
-            )
-
-    def write(
-        self,
-        timestamp_sec: float,
-        reference_heading_deg: float | None,
-        current_heading_deg: float | None,
-        heading_error_deg: float | None,
-        command: str,
-        state: str,
-    ) -> None:
-        """
-        Append one heading-lock sample.
-
-        Args:
-            timestamp_sec: Seconds since forward motion started.
-            reference_heading_deg: Stored heading reference.
-            current_heading_deg: Latest IMU heading.
-            heading_error_deg: Current heading error.
-            command: Current correction command.
-            state: Current heading-lock state.
-        """
-        with self.csv_path.open("a", newline="") as csv_file:
-            writer = csv.writer(csv_file)
-            writer.writerow(
-                [
-                    f"{timestamp_sec:.2f}",
-                    format_optional(reference_heading_deg),
-                    format_optional(current_heading_deg),
-                    format_optional(heading_error_deg),
-                    command,
-                    state,
-                ]
-            )
-
-
-def format_optional(value: float | None) -> str:
-    """Format optional float values for display and CSV."""
-    if value is None:
-        return ""
-
-    return f"{value:.2f}"
-
-
 def choose_orientation_state(
     orientation_deg: float | None,
     start_threshold_deg: float,
@@ -143,13 +214,13 @@ def choose_orientation_state(
     current_state: str,
 ) -> str:
     """
-    Choose orientation alignment state before heading lock starts.
+    Choose orientation-alignment state before drift measurement starts.
 
     Args:
-        orientation_deg: Measured AprilTag orientation.
-        start_threshold_deg: Threshold to start continuous correction.
-        stop_tolerance_deg: Tolerance to stop orientation correction.
-        current_state: Current orientation alignment state.
+        orientation_deg: Current AprilTag orientation.
+        start_threshold_deg: Angle that starts continuous correction.
+        stop_tolerance_deg: Angle that completes alignment.
+        current_state: Current orientation state.
 
     Returns:
         WAITING, ALIGNING_LEFT, ALIGNING_RIGHT, ALIGNED, or TAG_LOST.
@@ -177,13 +248,13 @@ def choose_orientation_state(
 
 def command_for_orientation_state(state: str) -> str:
     """
-    Convert orientation alignment state to ESP32 validation command.
+    Convert orientation-alignment state to validation serial command.
 
     Args:
-        state: Orientation alignment state.
+        state: Orientation-alignment state.
 
     Returns:
-        Serial command text or NONE.
+        START_LEFT_CORRECTION, START_RIGHT_CORRECTION, STOP_CORRECTION, or NONE.
     """
     if state == "ALIGNING_LEFT":
         return "START_LEFT_CORRECTION"
@@ -197,79 +268,21 @@ def command_for_orientation_state(state: str) -> str:
     return "NONE"
 
 
-def choose_heading_lock_state(
-    heading_error_deg: float | None,
-    start_threshold_deg: float,
-    stop_tolerance_deg: float,
-    current_state: str,
-) -> str:
-    """
-    Choose heading lock correction state using hysteresis.
-
-    Args:
-        heading_error_deg: Current heading error.
-        start_threshold_deg: Error threshold that starts correction.
-        stop_tolerance_deg: Error threshold that stops correction.
-        current_state: Current heading-lock state.
-
-    Returns:
-        HEADING_LOCKED, CORRECTING_LEFT, or CORRECTING_RIGHT.
-    """
-    if heading_error_deg is None:
-        return current_state
-
-    if abs(heading_error_deg) <= stop_tolerance_deg:
-        return "HEADING_LOCKED"
-
-    if current_state == "CORRECTING_LEFT" and heading_error_deg > stop_tolerance_deg:
-        return "CORRECTING_LEFT"
-
-    if current_state == "CORRECTING_RIGHT" and heading_error_deg < -stop_tolerance_deg:
-        return "CORRECTING_RIGHT"
-
-    if heading_error_deg > start_threshold_deg:
-        return "CORRECTING_LEFT"
-
-    if heading_error_deg < -start_threshold_deg:
-        return "CORRECTING_RIGHT"
-
-    return current_state
-
-
-def command_for_heading_state(state: str) -> str:
-    """
-    Convert heading-lock state to ESP32 correction command.
-
-    Args:
-        state: Heading-lock state.
-
-    Returns:
-        Serial command text.
-    """
-    if state == "CORRECTING_LEFT":
-        return "START_LEFT_CORRECTION"
-
-    if state == "CORRECTING_RIGHT":
-        return "START_RIGHT_CORRECTION"
-
-    return "STOP_CORRECTION"
-
-
 def send_if_changed(
     serial_controller: SerialMotorController,
     command: str,
     last_sent_command: str,
 ) -> str:
     """
-    Send a raw serial command only when it changes.
+    Send a raw command only when it changes.
 
     Args:
         serial_controller: ESP32 serial controller.
         command: Desired command.
-        last_sent_command: Last command transmitted.
+        last_sent_command: Last transmitted command.
 
     Returns:
-        Updated last sent command.
+        Updated last transmitted command.
     """
     if command == "NONE" or command == last_sent_command:
         return last_sent_command
@@ -278,76 +291,176 @@ def send_if_changed(
     return command
 
 
-def draw_overlay(
+def draw_visualization(
     frame,
-    orientation_deg: float | None,
+    detection: dict[str, Any] | None,
+    measurement: TagMeasurement,
     reference_heading_deg: float | None,
     current_heading_deg: float | None,
     heading_error_deg: float | None,
-    current_command: str,
-    state: str,
     moving_time_sec: float,
+    phase: str,
 ) -> None:
     """
-    Draw heading-lock validation values on the camera image.
+    Draw full AprilTag and heading drift diagnostics.
 
     Args:
         frame: Camera frame.
-        orientation_deg: AprilTag orientation during setup.
-        reference_heading_deg: Stored heading reference.
+        detection: First visible AprilTag detection.
+        measurement: Latest tag measurements.
+        reference_heading_deg: Stored IMU reference heading.
         current_heading_deg: Latest IMU heading.
-        heading_error_deg: Current heading error.
-        current_command: Current serial command.
-        state: Current validation state.
-        moving_time_sec: Seconds since START_FORWARD.
+        heading_error_deg: Current IMU heading error.
+        moving_time_sec: Time spent moving forward.
+        phase: Current validation phase.
     """
-    orientation_text = format_display(orientation_deg, suffix=" deg", signed=True)
-    reference_text = format_display(reference_heading_deg, suffix=" deg")
-    current_text = format_display(current_heading_deg, suffix=" deg")
-    error_text = format_display(heading_error_deg, suffix=" deg", signed=True)
+    image_height, image_width = frame.shape[:2]
+    image_center_x = int(image_width / 2)
+    image_center_y = int(image_height / 2)
 
-    lines = [
-        f"Orientation: {orientation_text}",
-        f"Reference Heading: {reference_text}",
-        f"Current Heading: {current_text}",
-        f"Heading Error: {error_text}",
-        f"Current Correction Command: {current_command}",
-        f"Current State: {state}",
-        f"Distance Time Moving: {moving_time_sec:.2f} s",
-        "A: START   S: STOP   Q: QUIT",
+    cv2.line(frame, (image_center_x, 0), (image_center_x, image_height), (0, 255, 255), 1)
+    cv2.line(frame, (0, image_center_y), (image_width, image_center_y), (0, 255, 255), 1)
+    cv2.drawMarker(
+        frame,
+        (image_center_x, image_center_y),
+        (0, 255, 255),
+        markerType=cv2.MARKER_CROSS,
+        markerSize=22,
+        thickness=2,
+    )
+
+    if detection is not None:
+        corners = [
+            (int(corner_x), int(corner_y))
+            for corner_x, corner_y in detection["corners"]
+        ]
+
+        for index, corner in enumerate(corners):
+            cv2.line(frame, corner, corners[(index + 1) % len(corners)], (0, 255, 0), 2)
+
+        if len(corners) >= 2:
+            cv2.line(frame, corners[0], corners[1], (255, 0, 255), 3)
+
+        if measurement.tag_center_x is not None and measurement.tag_center_y is not None:
+            tag_center = (
+                int(measurement.tag_center_x),
+                int(measurement.tag_center_y),
+            )
+            cv2.circle(frame, tag_center, 6, (0, 0, 255), -1)
+
+    orientation_color = get_orientation_color(measurement.orientation_deg)
+
+    text_lines = [
+        ("Tag ID", format_display(measurement.tag_id)),
+        ("Tag Center X", format_display(measurement.tag_center_x, decimals=0)),
+        ("Tag Center Y", format_display(measurement.tag_center_y, decimals=0)),
+        ("Image Center X", format_display(measurement.image_center_x, decimals=0)),
+        ("Image Center Y", format_display(measurement.image_center_y, decimals=0)),
+        ("Position Error X", format_display(measurement.position_error_x, decimals=0, signed=True)),
+        ("Tag Orientation", format_display(measurement.orientation_deg, suffix=" deg", signed=True)),
+        ("Reference Heading", format_display(reference_heading_deg, suffix=" deg", signed=True)),
+        ("Current Heading", format_display(current_heading_deg, suffix=" deg", signed=True)),
+        ("Heading Error", format_display(heading_error_deg, suffix=" deg", signed=True)),
+        ("Moving Time", f"{moving_time_sec:.2f} s"),
+        ("Phase", phase),
+        ("Keys", "A: START   S: STOP   Q: QUIT"),
     ]
 
-    y = 32
-    for line in lines:
+    y = 28
+    for label, value in text_lines:
+        color = orientation_color if label == "Tag Orientation" else (255, 255, 255)
         cv2.putText(
             frame,
-            line,
+            f"{label}: {value}",
             (20, y),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.68,
-            (255, 255, 255),
+            0.62,
+            color,
             2,
         )
-        y += 34
+        y += 28
+
+
+def get_orientation_color(orientation_deg: float | None) -> tuple[int, int, int]:
+    """
+    Return overlay color for orientation severity.
+
+    Args:
+        orientation_deg: AprilTag orientation angle.
+
+    Returns:
+        BGR color tuple.
+    """
+    if orientation_deg is None:
+        return (255, 255, 255)
+
+    abs_orientation = abs(orientation_deg)
+    if abs_orientation <= 2.0:
+        return (0, 255, 0)
+
+    if abs_orientation <= 5.0:
+        return (0, 255, 255)
+
+    return (0, 0, 255)
 
 
 def format_display(
-    value: float | None,
+    value: float | int | None,
     suffix: str = "",
+    decimals: int = 2,
     signed: bool = False,
 ) -> str:
-    """Format optional float for overlay display."""
+    """
+    Format optional values for display.
+
+    Args:
+        value: Numeric value or None.
+        suffix: Text appended after the number.
+        decimals: Decimal places.
+        signed: True to include + sign for positive numbers.
+
+    Returns:
+        Display text.
+    """
     if value is None:
         return "None"
 
-    if signed:
-        return f"{value:+.2f}{suffix}"
+    if isinstance(value, int):
+        return str(value)
 
-    return f"{value:.2f}{suffix}"
+    sign = "+" if signed else ""
+    return f"{value:{sign}.{decimals}f}{suffix}"
+
+
+def format_csv(value: float | None) -> str:
+    """Format optional float for CSV output."""
+    if value is None:
+        return ""
+
+    return f"{value:.2f}"
+
+
+def log_terminal(
+    reference_heading_deg: float | None,
+    current_heading_deg: float | None,
+    heading_error_deg: float | None,
+    measurement: TagMeasurement,
+    moving_time_sec: float,
+    phase: str,
+) -> None:
+    """Print one terminal diagnostic block."""
+    print("Reference Heading:", format_display(reference_heading_deg, " deg"))
+    print("Current Heading:", format_display(current_heading_deg, " deg"))
+    print("Heading Error:", format_display(heading_error_deg, " deg", signed=True))
+    print("Tag Orientation:", format_display(measurement.orientation_deg, " deg", signed=True))
+    print("Position Error X:", format_display(measurement.position_error_x, " px", decimals=0, signed=True))
+    print(f"Moving Time: {moving_time_sec:.2f} s")
+    print("Phase:", phase)
+    print()
 
 
 def run_validation(args: argparse.Namespace) -> None:
-    """Run validation-only IMU heading lock while moving forward."""
+    """Run heading drift measurement with full AprilTag visualization."""
     application_state = ApplicationState()
     perception_manager = PerceptionManager(application_state)
     serial_controller = SerialMotorController(
@@ -359,18 +472,17 @@ def run_validation(args: argparse.Namespace) -> None:
         baudrate=args.baudrate,
         timeout=0.0,
     )
-    logger = HeadingLockLogger(Path(args.csv).expanduser().resolve())
+    logger = HeadingDriftLogger(Path(args.csv).expanduser().resolve())
 
     phase = "WAITING"
-    heading_state = "HEADING_LOCKED"
     orientation_state = "WAITING"
-    current_command = "NONE"
     last_sent_command = "NONE"
     reference_heading_deg: float | None = None
     moving_start_time: float | None = None
     last_log_time = 0.0
     last_csv_time = 0.0
     calibration_sent = False
+    summary_printed = False
 
     if not perception_manager.initialize():
         print("PerceptionManager failed to initialize camera.")
@@ -380,19 +492,18 @@ def run_validation(args: argparse.Namespace) -> None:
         perception_manager.release()
         return
 
-    print("Heading lock validation started.")
-    print("Press A to align orientation, recalibrate IMU, and start forward motion.")
+    print("Heading drift measurement started.")
+    print("Press A to align, recalibrate IMU, and start forward measurement.")
 
     try:
         while True:
             detections = perception_manager.update()
             frame = perception_manager.last_frame
             detection = detections[0] if detections else None
-            orientation_deg = calculate_tag_orientation_deg(detection)
+            measurement = measure_tag(frame, detection)
 
             imu_reader.update_from_connection(serial_controller.serial_connection)
             current_heading_deg = imu_reader.get_heading()
-            heading_error_deg: float | None = None
 
             now = time.monotonic()
             moving_time_sec = (
@@ -400,78 +511,70 @@ def run_validation(args: argparse.Namespace) -> None:
                 if moving_start_time is not None
                 else 0.0
             )
+            heading_error_deg = (
+                wrap_angle_deg(current_heading_deg - reference_heading_deg)
+                if current_heading_deg is not None and reference_heading_deg is not None
+                else None
+            )
 
             key = cv2.waitKey(1) & 0xFF
 
             if key in (ord("a"), ord("A")):
                 phase = "ORIENTATION_ALIGNING"
                 orientation_state = "WAITING"
-                heading_state = "HEADING_LOCKED"
                 reference_heading_deg = None
                 moving_start_time = None
                 calibration_sent = False
-                current_command = "NONE"
                 last_sent_command = "NONE"
-                print("Heading lock sequence started.")
+                imu_reader.latest_heading_deg = None
+                imu_reader.latest_status = "IMU_CALIBRATING"
+                last_csv_time = 0.0
+                print("Measurement sequence started.")
 
             if key in (ord("s"), ord("S")):
-                phase = "STOPPED"
-                heading_state = "HEADING_LOCKED"
-                orientation_state = "WAITING"
-                current_command = "STOP"
-                last_sent_command = "STOP"
-                serial_controller.send_raw_command("STOP_CORRECTION", force=True)
                 serial_controller.send_raw_command("STOP", force=True)
-                print("Heading lock validation stopped.")
+                phase = "STOPPED"
+                print("Forward measurement stopped.")
+                if not summary_printed:
+                    logger.print_summary()
+                    summary_printed = True
 
             if phase == "ORIENTATION_ALIGNING":
                 next_orientation_state = choose_orientation_state(
-                    orientation_deg,
+                    measurement.orientation_deg,
                     args.orientation_start_threshold,
                     args.orientation_tolerance,
                     orientation_state,
                 )
 
                 if next_orientation_state == "TAG_LOST":
-                    current_command = "STOP_CORRECTION"
+                    command = "STOP_CORRECTION"
                     last_sent_command = send_if_changed(
                         serial_controller,
-                        current_command,
+                        command,
                         last_sent_command,
                     )
                 else:
                     orientation_state = next_orientation_state
-                    orientation_command = command_for_orientation_state(
-                        orientation_state,
-                    )
+                    command = command_for_orientation_state(orientation_state)
                     last_sent_command = send_if_changed(
                         serial_controller,
-                        orientation_command,
+                        command,
                         last_sent_command,
                     )
-                    if orientation_command != "NONE":
-                        current_command = orientation_command
 
                     if orientation_state == "ALIGNED":
                         phase = "CALIBRATING_IMU"
-                        current_command = "CALIBRATE_IMU"
-                        serial_controller.send_raw_command(
-                            "CALIBRATE_IMU",
-                            force=True,
-                        )
+                        serial_controller.send_raw_command("CALIBRATE_IMU", force=True)
                         last_sent_command = "CALIBRATE_IMU"
                         calibration_sent = True
+                        imu_reader.latest_heading_deg = None
+                        imu_reader.latest_status = "IMU_CALIBRATING"
 
             elif phase == "CALIBRATING_IMU":
-                if (
-                    calibration_sent
-                    and imu_reader.latest_status == "CONNECTED"
-                    and current_heading_deg is not None
-                ):
+                if calibration_sent and current_heading_deg is not None:
                     reference_heading_deg = current_heading_deg
-                    phase = "MOVING"
-                    heading_state = "HEADING_LOCKED"
-                    current_command = "START_FORWARD"
+                    phase = "MOVING_MEASUREMENT"
                     serial_controller.send_raw_command("START_FORWARD", force=True)
                     last_sent_command = "START_FORWARD"
                     moving_start_time = now
@@ -480,82 +583,65 @@ def run_validation(args: argparse.Namespace) -> None:
                         reference_heading_deg,
                         current_heading_deg,
                         0.0,
-                        current_command,
-                        heading_state,
+                        measurement,
                     )
                     print(
-                        "Heading reference captured: "
-                        f"{reference_heading_deg:.2f} deg"
+                        "Reference heading captured: "
+                        f"{reference_heading_deg:+.2f} deg"
                     )
 
-            elif phase == "MOVING":
-                if reference_heading_deg is not None and current_heading_deg is not None:
-                    heading_error_deg = wrap_angle_deg(
-                        current_heading_deg - reference_heading_deg,
-                    )
-                    next_heading_state = choose_heading_lock_state(
-                        heading_error_deg,
-                        args.heading_start_threshold,
-                        args.heading_stop_tolerance,
-                        heading_state,
-                    )
-                    heading_state = next_heading_state
-                    current_command = command_for_heading_state(heading_state)
-                    last_sent_command = send_if_changed(
-                        serial_controller,
-                        current_command,
-                        last_sent_command,
-                    )
-
+            elif phase == "MOVING_MEASUREMENT":
                 if (now - last_csv_time) >= args.csv_interval:
                     logger.write(
                         moving_time_sec,
                         reference_heading_deg,
                         current_heading_deg,
                         heading_error_deg,
-                        current_command,
-                        heading_state,
+                        measurement,
                     )
                     last_csv_time = now
 
             if (now - last_log_time) >= args.log_interval:
-                print("Ref Heading:", format_display(reference_heading_deg, " deg"))
-                print("Current Heading:", format_display(current_heading_deg, " deg"))
-                print("Heading Error:", format_display(heading_error_deg, " deg", signed=True))
-                print("Command:", current_command)
-                print("State:", heading_state if phase == "MOVING" else phase)
-                print()
-                last_log_time = now
-
-            if frame is not None:
-                draw_overlay(
-                    frame,
-                    orientation_deg,
+                log_terminal(
                     reference_heading_deg,
                     current_heading_deg,
                     heading_error_deg,
-                    current_command,
-                    heading_state if phase == "MOVING" else phase,
+                    measurement,
                     moving_time_sec,
+                    phase,
                 )
-                cv2.imshow("Heading Lock Validation", frame)
+                last_log_time = now
+
+            if frame is not None:
+                draw_visualization(
+                    frame,
+                    detection,
+                    measurement,
+                    reference_heading_deg,
+                    current_heading_deg,
+                    heading_error_deg,
+                    moving_time_sec,
+                    phase,
+                )
+                cv2.imshow("Heading Drift Measurement", frame)
 
             if key in (ord("q"), ord("Q")):
                 break
     except KeyboardInterrupt:
-        print("Stopping heading lock validation.")
+        print("Stopping heading drift measurement.")
     finally:
-        serial_controller.send_raw_command("STOP_CORRECTION", force=True)
         serial_controller.send_raw_command("STOP", force=True)
         serial_controller.disconnect()
         perception_manager.release()
+        if not summary_printed:
+            logger.print_summary()
         cv2.destroyAllWindows()
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse heading lock validation options."""
+    """Parse heading drift measurement options."""
     parser = argparse.ArgumentParser(
-        description="Validation-only IMU heading lock while moving forward.",
+        description="Validation-only natural heading drift measurement.",
     )
     parser.add_argument("--port", default="/dev/ttyUSB0")
     parser.add_argument("--baudrate", type=int, default=115200)
@@ -572,21 +658,9 @@ def parse_args() -> argparse.Namespace:
         help="Finish orientation alignment within this angle.",
     )
     parser.add_argument(
-        "--heading-start-threshold",
-        type=float,
-        default=2.0,
-        help="Start heading correction above this heading error.",
-    )
-    parser.add_argument(
-        "--heading-stop-tolerance",
-        type=float,
-        default=1.0,
-        help="Stop heading correction within this heading error.",
-    )
-    parser.add_argument(
         "--csv",
-        default="validation/heading_lock_log.csv",
-        help="CSV file for heading lock samples.",
+        default="validation/heading_drift_measurement.csv",
+        help="CSV file for heading drift measurement samples.",
     )
     parser.add_argument(
         "--csv-interval",
@@ -610,7 +684,7 @@ if __name__ == "__main__":
 
     if DEPENDENCY_ERROR is not None:
         print(
-            "Heading lock validation cannot start because a required "
+            "Heading drift measurement cannot start because a required "
             f"dependency is missing: {DEPENDENCY_ERROR.name}"
         )
         print(
