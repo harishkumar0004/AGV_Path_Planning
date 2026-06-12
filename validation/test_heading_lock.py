@@ -39,6 +39,17 @@ class TagMeasurement:
     orientation_deg: float | None
 
 
+@dataclass
+class StartGateStatus:
+    """Stores validation-only start gate condition status."""
+
+    orientation_pass: bool
+    position_pass: bool
+    heading_pass: bool
+    stable_time_sec: float
+    status_text: str
+
+
 class HeadingDriftLogger:
     """Logs natural heading drift while the AGV moves forward."""
 
@@ -291,6 +302,65 @@ def send_if_changed(
     return command
 
 
+def evaluate_start_gate(
+    measurement: TagMeasurement,
+    heading_error_deg: float | None,
+    stable_since: float | None,
+    now: float,
+    stable_duration_sec: float,
+) -> tuple[StartGateStatus, float | None]:
+    """
+    Check whether all start conditions are stable before forward motion.
+
+    Args:
+        measurement: Latest AprilTag camera measurement.
+        heading_error_deg: Current IMU heading error from the reference.
+        stable_since: Time when all gate conditions first became true.
+        now: Current monotonic time.
+        stable_duration_sec: Required continuous stable duration.
+
+    Returns:
+        Start gate status and updated stable start time.
+    """
+    orientation_pass = (
+        measurement.orientation_deg is not None
+        and abs(measurement.orientation_deg) <= 2.0
+    )
+    position_pass = (
+        measurement.position_error_x is not None
+        and abs(measurement.position_error_x) <= 10.0
+    )
+    heading_pass = heading_error_deg is not None and abs(heading_error_deg) <= 0.5
+
+    all_conditions_pass = orientation_pass and position_pass and heading_pass
+
+    if all_conditions_pass:
+        if stable_since is None:
+            stable_since = now
+
+        stable_time_sec = now - stable_since
+        if stable_time_sec >= stable_duration_sec:
+            status_text = "READY_TO_MOVE"
+        else:
+            stable_ms = int(stable_time_sec * 1000)
+            status_text = f"STABLE_{stable_ms}ms"
+    else:
+        stable_since = None
+        stable_time_sec = 0.0
+        status_text = "WAITING_FOR_STABLE_ALIGNMENT"
+
+    return (
+        StartGateStatus(
+            orientation_pass=orientation_pass,
+            position_pass=position_pass,
+            heading_pass=heading_pass,
+            stable_time_sec=stable_time_sec,
+            status_text=status_text,
+        ),
+        stable_since,
+    )
+
+
 def draw_visualization(
     frame,
     detection: dict[str, Any] | None,
@@ -300,6 +370,7 @@ def draw_visualization(
     heading_error_deg: float | None,
     moving_time_sec: float,
     phase: str,
+    gate_status: StartGateStatus | None,
 ) -> None:
     """
     Draw full AprilTag and heading drift diagnostics.
@@ -313,6 +384,7 @@ def draw_visualization(
         heading_error_deg: Current IMU heading error.
         moving_time_sec: Time spent moving forward.
         phase: Current validation phase.
+        gate_status: Latest start gate condition status.
     """
     image_height, image_width = frame.shape[:2]
     image_center_x = int(image_width / 2)
@@ -363,7 +435,6 @@ def draw_visualization(
         ("Heading Error", format_display(heading_error_deg, suffix=" deg", signed=True)),
         ("Moving Time", f"{moving_time_sec:.2f} s"),
         ("Phase", phase),
-        ("Keys", "A: START   S: STOP   Q: QUIT"),
     ]
 
     y = 28
@@ -379,6 +450,47 @@ def draw_visualization(
             2,
         )
         y += 28
+
+    if gate_status is not None:
+        gate_lines = [
+            ("Orientation", pass_fail_text(gate_status.orientation_pass), pass_fail_color(gate_status.orientation_pass)),
+            ("Position", pass_fail_text(gate_status.position_pass), pass_fail_color(gate_status.position_pass)),
+            ("Heading", pass_fail_text(gate_status.heading_pass), pass_fail_color(gate_status.heading_pass)),
+            ("Stable Time", f"{gate_status.stable_time_sec:.2f} s", (255, 255, 255)),
+            ("Gate Status", gate_status.status_text, pass_fail_color(gate_status.status_text == "READY_TO_MOVE")),
+        ]
+
+        for label, value, color in gate_lines:
+            cv2.putText(
+                frame,
+                f"{label}: {value}",
+                (20, y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.62,
+                color,
+                2,
+            )
+            y += 28
+
+    cv2.putText(
+        frame,
+        "Keys: A: START   S: STOP   Q: QUIT",
+        (20, y),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.62,
+        (255, 255, 255),
+        2,
+    )
+
+
+def pass_fail_text(condition_passed: bool) -> str:
+    """Return PASS or FAIL for a boolean gate condition."""
+    return "PASS" if condition_passed else "FAIL"
+
+
+def pass_fail_color(condition_passed: bool) -> tuple[int, int, int]:
+    """Return green for PASS and red for FAIL."""
+    return (0, 255, 0) if condition_passed else (0, 0, 255)
 
 
 def get_orientation_color(orientation_deg: float | None) -> tuple[int, int, int]:
@@ -447,6 +559,7 @@ def log_terminal(
     measurement: TagMeasurement,
     moving_time_sec: float,
     phase: str,
+    gate_status: StartGateStatus | None,
 ) -> None:
     """Print one terminal diagnostic block."""
     print("Reference Heading:", format_display(reference_heading_deg, " deg"))
@@ -454,6 +567,10 @@ def log_terminal(
     print("Heading Error:", format_display(heading_error_deg, " deg", signed=True))
     print("Tag Orientation:", format_display(measurement.orientation_deg, " deg", signed=True))
     print("Position Error X:", format_display(measurement.position_error_x, " px", decimals=0, signed=True))
+    if gate_status is not None:
+        print(f"Stable Time: {gate_status.stable_time_sec:.2f} s")
+        print("Gate Status:")
+        print(gate_status.status_text)
     print(f"Moving Time: {moving_time_sec:.2f} s")
     print("Phase:", phase)
     print()
@@ -483,6 +600,8 @@ def run_validation(args: argparse.Namespace) -> None:
     last_csv_time = 0.0
     calibration_sent = False
     summary_printed = False
+    gate_stable_since: float | None = None
+    gate_status: StartGateStatus | None = None
 
     if not perception_manager.initialize():
         print("PerceptionManager failed to initialize camera.")
@@ -529,6 +648,9 @@ def run_validation(args: argparse.Namespace) -> None:
                 imu_reader.latest_heading_deg = None
                 imu_reader.latest_status = "IMU_CALIBRATING"
                 last_csv_time = 0.0
+                gate_stable_since = None
+                gate_status = None
+                summary_printed = False
                 print("Measurement sequence started.")
 
             if key in (ord("s"), ord("S")):
@@ -574,6 +696,32 @@ def run_validation(args: argparse.Namespace) -> None:
             elif phase == "CALIBRATING_IMU":
                 if calibration_sent and current_heading_deg is not None:
                     reference_heading_deg = current_heading_deg
+                    phase = "START_GATE"
+                    gate_stable_since = None
+                    gate_status = None
+                    print(
+                        "Reference heading captured: "
+                        f"{reference_heading_deg:+.2f} deg"
+                    )
+                    print("Entering START_GATE.")
+
+            elif phase == "START_GATE":
+                gate_status, gate_stable_since = evaluate_start_gate(
+                    measurement,
+                    heading_error_deg,
+                    gate_stable_since,
+                    now,
+                    args.start_gate_duration,
+                )
+
+                if gate_status.status_text == "READY_TO_MOVE":
+                    print("START GATE PASSED")
+                    print("Orientation Error:", format_display(measurement.orientation_deg, " deg", signed=True))
+                    print("Position Error:", format_display(measurement.position_error_x, " px", decimals=0, signed=True))
+                    print("Heading Error:", format_display(heading_error_deg, " deg", signed=True))
+                    print(f"Stable Time: {gate_status.stable_time_sec:.2f} s")
+                    print("START_FORWARD")
+
                     phase = "MOVING_MEASUREMENT"
                     serial_controller.send_raw_command("START_FORWARD", force=True)
                     last_sent_command = "START_FORWARD"
@@ -582,12 +730,8 @@ def run_validation(args: argparse.Namespace) -> None:
                         0.0,
                         reference_heading_deg,
                         current_heading_deg,
-                        0.0,
+                        heading_error_deg,
                         measurement,
-                    )
-                    print(
-                        "Reference heading captured: "
-                        f"{reference_heading_deg:+.2f} deg"
                     )
 
             elif phase == "MOVING_MEASUREMENT":
@@ -609,6 +753,7 @@ def run_validation(args: argparse.Namespace) -> None:
                     measurement,
                     moving_time_sec,
                     phase,
+                    gate_status,
                 )
                 last_log_time = now
 
@@ -622,6 +767,7 @@ def run_validation(args: argparse.Namespace) -> None:
                     heading_error_deg,
                     moving_time_sec,
                     phase,
+                    gate_status,
                 )
                 cv2.imshow("Heading Drift Measurement", frame)
 
@@ -669,9 +815,15 @@ def parse_args() -> argparse.Namespace:
         help="Seconds between CSV samples while moving.",
     )
     parser.add_argument(
-        "--log-interval",
+        "--start-gate-duration",
         type=float,
         default=0.5,
+        help="Seconds that all start gate conditions must remain stable.",
+    )
+    parser.add_argument(
+        "--log-interval",
+        type=float,
+        default=0.25,
         help="Seconds between terminal logs.",
     )
     return parser.parse_args()
