@@ -11,9 +11,11 @@ SerialCommandHandler::SerialCommandHandler(
   HardwareSerial &serial,
   MotionController &motion_controller,
   uint32_t command_timeout_ms,
-  DifferentialDrive *validation_drive
+  DifferentialDrive *validation_drive,
+  ImuManager *imu_manager
 ) : _serial(serial), _motion_controller(motion_controller) {
   _validation_drive = validation_drive;
+  _imu_manager = imu_manager;
   _command_timeout_ms = command_timeout_ms;
   _last_command_ms = 0;
   _has_received_command = false;
@@ -79,6 +81,25 @@ void SerialCommandHandler::processCommand(String command) {
         ? "RUNNING"
         : "IDLE"
     );
+    return;
+  }
+
+  if (command_name == "CALIBRATE_IMU") {
+    if (_imu_manager == nullptr) {
+      _serial.println("IMU_ERROR");
+      _serial.println("Warning: IMU manager is not configured.");
+      return;
+    }
+
+    _serial.println("IMU_CALIBRATING");
+
+    if (!_imu_manager->recalibrate()) {
+      _serial.println("IMU_ERROR");
+      return;
+    }
+
+    _serial.println("IMU_READY");
+    _imu_manager->printHeadingSerial(_serial);
     return;
   }
 

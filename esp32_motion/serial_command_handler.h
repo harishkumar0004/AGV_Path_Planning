@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 #include "differential_drive.h"
+#include "imu_manager.h"
 #include "motion_controller.h"
 
 
@@ -12,7 +13,8 @@ public:
     HardwareSerial &serial,
     MotionController &motion_controller,
     uint32_t command_timeout_ms = 2000,
-    DifferentialDrive *validation_drive = nullptr
+    DifferentialDrive *validation_drive = nullptr,
+    ImuManager *imu_manager = nullptr
   );
 
   void begin(uint32_t baudrate);
@@ -23,6 +25,7 @@ private:
   HardwareSerial &_serial;
   MotionController &_motion_controller;
   DifferentialDrive *_validation_drive;
+  ImuManager *_imu_manager;
   uint32_t _command_timeout_ms;
   unsigned long _last_command_ms;
   bool _has_received_command;

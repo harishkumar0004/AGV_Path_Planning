@@ -59,6 +59,35 @@ bool ImuManager::begin() {
 }
 
 
+bool ImuManager::recalibrate() {
+  if (_state == IMU_ERROR || _state == IMU_BOOT) {
+    return false;
+  }
+
+  _state = IMU_CALIBRATING;
+  _relative_heading_deg = 0.0f;
+  _heading_candidate_deg = 0.0f;
+  _heading_candidate_valid = false;
+  _heading_stable_count = 0;
+
+  calibrateGyro();
+
+  if (!initializeOrientation()) {
+    _state = IMU_ERROR;
+    return false;
+  }
+
+  getEulerDegrees();
+  _reference_heading_deg = _yaw_deg;
+  _relative_heading_deg = 0.0f;
+  _last_update_us = micros();
+  _calibration_start_ms = millis();
+  _state = IMU_READY;
+
+  return true;
+}
+
+
 void ImuManager::update() {
   if (_state == IMU_ERROR || _state == IMU_BOOT) {
     return;

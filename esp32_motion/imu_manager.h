@@ -27,6 +27,7 @@ public:
 
   bool begin();
   void update();
+  bool recalibrate();
   bool isReady() const;
   ImuState getState() const;
   const char *getStateText() const;

@@ -38,8 +38,14 @@ StepGenerator right_motor(
 
 DifferentialDrive drive(left_motor, right_motor);
 MotionController motion_controller(motor_config, drive);
-SerialCommandHandler serial_handler(Serial, motion_controller, 0, &drive);
 ImuManager imu_manager;
+SerialCommandHandler serial_handler(
+  Serial,
+  motion_controller,
+  0,
+  &drive,
+  &imu_manager
+);
 
 const uint32_t IMU_PRINT_INTERVAL_MS = 100;
 uint32_t last_imu_print_ms = 0;
@@ -50,7 +56,7 @@ void setup() {
   motion_controller.begin();
 
   Serial.println("ESP32 serial motion example started");
-  Serial.println("Commands: START_FORWARD, START_SLOW_FORWARD, STOP, TURN_LEFT, TURN_RIGHT, STATUS");
+  Serial.println("Commands: START_FORWARD, START_SLOW_FORWARD, STOP, TURN_LEFT, TURN_RIGHT, STATUS, CALIBRATE_IMU");
   Serial.println("Validation pulses: LEFT_PULSE 100, RIGHT_PULSE 100");
   Serial.println("Calibration: TURN_RIGHT 10, TURN_RIGHT 20, TURN_RIGHT 30, ...");
 
