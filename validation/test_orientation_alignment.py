@@ -51,30 +51,63 @@ def calculate_tag_orientation_deg(detection: dict[str, Any] | None) -> float | N
 
 def choose_orientation_command(
     orientation_deg: float | None,
-    tolerance_deg: float,
-    pulse_ms: int,
+    start_threshold_deg: float,
+    stop_tolerance_deg: float,
+    current_state: str,
 ) -> str:
     """
-    Choose a correction command using only AprilTag orientation.
+    Choose the next orientation correction state.
 
     Args:
         orientation_deg: Measured tag orientation in degrees.
-        tolerance_deg: Deadband around zero.
-        pulse_ms: Steering pulse duration.
+        start_threshold_deg: Error needed to start correction.
+        stop_tolerance_deg: Error where correction should stop.
+        current_state: Current correction state.
 
     Returns:
-        LEFT_PULSE, RIGHT_PULSE, STOP, or TAG_LOST command text.
+        WAITING, ALIGNING_LEFT, ALIGNING_RIGHT, ALIGNED, or TAG_LOST.
     """
     if orientation_deg is None:
         return "TAG_LOST"
 
-    if orientation_deg > tolerance_deg:
-        return f"LEFT_PULSE {pulse_ms}"
+    if abs(orientation_deg) <= stop_tolerance_deg:
+        return "ALIGNED"
 
-    if orientation_deg < -tolerance_deg:
-        return f"RIGHT_PULSE {pulse_ms}"
+    if current_state == "ALIGNING_LEFT" and orientation_deg > stop_tolerance_deg:
+        return "ALIGNING_LEFT"
 
-    return "STOP"
+    if current_state == "ALIGNING_RIGHT" and orientation_deg < -stop_tolerance_deg:
+        return "ALIGNING_RIGHT"
+
+    if orientation_deg > start_threshold_deg:
+        return "ALIGNING_LEFT"
+
+    if orientation_deg < -start_threshold_deg:
+        return "ALIGNING_RIGHT"
+
+    return current_state
+
+
+def command_for_state(state: str) -> str:
+    """
+    Convert correction state into serial command text.
+
+    Args:
+        state: Orientation correction state.
+
+    Returns:
+        START_LEFT_CORRECTION, START_RIGHT_CORRECTION, STOP_CORRECTION, or NONE.
+    """
+    if state == "ALIGNING_LEFT":
+        return "START_LEFT_CORRECTION"
+
+    if state == "ALIGNING_RIGHT":
+        return "START_RIGHT_CORRECTION"
+
+    if state == "ALIGNED":
+        return "STOP_CORRECTION"
+
+    return "NONE"
 
 
 def draw_overlay(
@@ -129,7 +162,11 @@ def draw_overlay(
         if orientation_deg is not None
         else "None"
     )
-    state_color = (0, 255, 0) if current_command == "STOP" else (0, 165, 255)
+    state_color = (
+        (0, 255, 0)
+        if current_command in {"STOP_CORRECTION", "NONE"}
+        else (0, 165, 255)
+    )
 
     lines = [
         f"Tag ID: {tag_id_text}",
@@ -160,7 +197,7 @@ def run_validation(args: argparse.Namespace) -> None:
     Run validation-only orientation correction.
 
     This tool ignores position error and does not use navigation or route
-    managers. It sends only LEFT_PULSE, RIGHT_PULSE, and STOP commands.
+    managers. It sends only continuous validation correction commands.
     """
     application_state = ApplicationState()
     perception_manager = PerceptionManager(application_state)
@@ -171,9 +208,11 @@ def run_validation(args: argparse.Namespace) -> None:
 
     active = False
     state = "WAITING"
-    current_command = "STOP"
-    last_command_time = 0.0
+    current_command = "NONE"
+    last_sent_command = "NONE"
     last_log_time = 0.0
+    alignment_start_time: float | None = None
+    alignment_start_angle: float | None = None
 
     if not perception_manager.initialize():
         print("PerceptionManager failed to initialize camera.")
@@ -183,8 +222,8 @@ def run_validation(args: argparse.Namespace) -> None:
         perception_manager.release()
         return
 
-    print("Orientation-only alignment validation started.")
-    print("Press A to start sending correction pulses. Press S to stop.")
+    print("Continuous orientation alignment validation started.")
+    print("Press A to start continuous correction. Press S to stop.")
 
     try:
         while True:
@@ -192,43 +231,80 @@ def run_validation(args: argparse.Namespace) -> None:
             frame = perception_manager.last_frame
             detection = detections[0] if detections else None
             orientation_deg = calculate_tag_orientation_deg(detection)
-            desired_command = choose_orientation_command(
-                orientation_deg,
-                args.tolerance,
-                args.pulse_ms,
-            )
 
             key = cv2.waitKey(1) & 0xFF
 
             if key in (ord("a"), ord("A")):
                 active = True
-                state = "ACTIVE"
+                state = "WAITING"
+                current_command = "NONE"
+                last_sent_command = "NONE"
+                alignment_start_time = None
+                alignment_start_angle = None
                 print("Orientation correction enabled.")
 
             if key in (ord("s"), ord("S")):
                 active = False
-                state = "STOPPED"
-                current_command = "STOP"
-                serial_controller.send_raw_command("STOP", force=True)
+                state = "WAITING"
+                current_command = "STOP_CORRECTION"
+                last_sent_command = "STOP_CORRECTION"
+                serial_controller.send_raw_command("STOP_CORRECTION", force=True)
                 print("Orientation correction stopped.")
 
             now = time.monotonic()
 
             if active:
-                if desired_command == "TAG_LOST":
-                    state = "TAG_LOST"
-                    current_command = "STOP"
-                elif desired_command == "STOP":
-                    state = "ALIGNED"
-                    current_command = "STOP"
-                    if (now - last_command_time) >= args.command_interval:
-                        serial_controller.send_raw_command("STOP", force=False)
-                        last_command_time = now
-                elif (now - last_command_time) >= args.command_interval:
-                    state = "CORRECTING"
-                    current_command = desired_command
-                    serial_controller.send_raw_command(desired_command, force=True)
-                    last_command_time = now
+                previous_state = state
+                next_state = choose_orientation_command(
+                    orientation_deg,
+                    args.start_threshold,
+                    args.tolerance,
+                    state,
+                )
+
+                if next_state == "TAG_LOST":
+                    if last_sent_command != "STOP_CORRECTION":
+                        serial_controller.send_raw_command(
+                            "STOP_CORRECTION",
+                            force=True,
+                        )
+                        last_sent_command = "STOP_CORRECTION"
+                    state = "WAITING"
+                    current_command = "STOP_CORRECTION"
+                else:
+                    state = next_state
+                    desired_command = command_for_state(state)
+
+                    if (
+                        state in {"ALIGNING_LEFT", "ALIGNING_RIGHT"}
+                        and previous_state != state
+                    ):
+                        alignment_start_time = now
+                        alignment_start_angle = orientation_deg
+
+                    if desired_command != "NONE" and desired_command != last_sent_command:
+                        serial_controller.send_raw_command(
+                            desired_command,
+                            force=True,
+                        )
+                        last_sent_command = desired_command
+                        current_command = desired_command
+
+                        if state == "ALIGNED":
+                            if (
+                                alignment_start_time is not None
+                                and alignment_start_angle is not None
+                                and orientation_deg is not None
+                            ):
+                                elapsed = now - alignment_start_time
+                                print(
+                                    "Alignment Complete | "
+                                    f"Start Angle: {alignment_start_angle:+.1f} deg | "
+                                    f"End Angle: {orientation_deg:+.1f} deg | "
+                                    f"Alignment Time: {elapsed:.2f} s"
+                                )
+                            alignment_start_time = None
+                            alignment_start_angle = None
 
                 if (now - last_log_time) >= args.log_interval:
                     orientation_text = (
@@ -259,7 +335,7 @@ def run_validation(args: argparse.Namespace) -> None:
     except KeyboardInterrupt:
         print("Stopping orientation alignment validation.")
     finally:
-        serial_controller.send_raw_command("STOP", force=True)
+        serial_controller.send_raw_command("STOP_CORRECTION", force=True)
         serial_controller.disconnect()
         perception_manager.release()
         cv2.destroyAllWindows()
@@ -275,20 +351,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--tolerance",
         type=float,
-        default=5.0,
-        help="Orientation tolerance in degrees.",
+        default=2.0,
+        help="Stop correction when absolute orientation is within this value.",
     )
     parser.add_argument(
-        "--pulse-ms",
-        type=int,
-        default=200,
-        help="Pulse duration used for LEFT_PULSE and RIGHT_PULSE.",
-    )
-    parser.add_argument(
-        "--command-interval",
+        "--start-threshold",
         type=float,
-        default=0.25,
-        help="Minimum seconds between correction commands.",
+        default=5.0,
+        help="Start correction when absolute orientation exceeds this value.",
     )
     parser.add_argument(
         "--log-interval",
