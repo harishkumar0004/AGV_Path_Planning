@@ -826,14 +826,21 @@ def run_validation(args: argparse.Namespace) -> None:
                     now,
                     args.start_gate_duration,
                 )
+                print("Current State:", state)
+                print("Gate Orientation:", pass_fail_text(gate_status.orientation_pass))
+                print("Gate Position:", pass_fail_text(gate_status.position_pass))
+                print(f"Gate Stable Time: {gate_status.stable_time_sec:.2f} s")
+                print("Gate Status:", gate_status.status_text)
 
                 if gate_status.status_text == "READY_TO_MOVE" and not start_forward_sent:
+                    print("ENTERED READY_TO_MOVE BLOCK")
                     print("Gate Orientation:", pass_fail_text(gate_status.orientation_pass))
                     print("Gate Position:", pass_fail_text(gate_status.position_pass))
                     print("START GATE PASSED")
                     print("START_FORWARD")
                     current_command = "START_FORWARD"
                     serial_controller.send_raw_command(current_command, force=True)
+                    print("TX: START_FORWARD")
                     reference_heading_deg = current_heading_deg
                     heading_error_deg = 0.0 if reference_heading_deg is not None else None
                     moving_started = True
