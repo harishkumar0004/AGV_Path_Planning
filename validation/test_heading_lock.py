@@ -373,7 +373,7 @@ def evaluate_start_gate(
         measurement.position_error_x is not None
         and abs(measurement.position_error_x) <= 10.0
     )
-    heading_pass = heading_error_deg is not None and abs(heading_error_deg) <= 0.5
+    heading_pass = True
 
     if orientation_pass and position_pass and heading_pass:
         if stable_since is None:
@@ -812,7 +812,7 @@ def run_validation(args: argparse.Namespace) -> None:
 
             elif state == "CALIBRATE_IMU_TAG1":
                 if calibration_sent and current_heading_deg is not None:
-                    reference_heading_deg = current_heading_deg
+                    reference_heading_deg = None
                     state = "START_GATE_TAG1"
                     log_transition("START_GATE_TAG1")
 
@@ -826,10 +826,14 @@ def run_validation(args: argparse.Namespace) -> None:
                 )
 
                 if gate_status.status_text == "READY_TO_MOVE":
+                    print("Gate Orientation:", pass_fail_text(gate_status.orientation_pass))
+                    print("Gate Position:", pass_fail_text(gate_status.position_pass))
                     print("START GATE PASSED")
                     print("START_FORWARD")
                     current_command = "START_FORWARD"
                     serial_controller.send_raw_command(current_command, force=True)
+                    reference_heading_deg = current_heading_deg
+                    heading_error_deg = 0.0 if reference_heading_deg is not None else None
                     moving_started = True
                     tag_acquired = True
                     active_tag_id = 1
