@@ -285,10 +285,10 @@ def command_for_heading_hold(heading_error_deg: float | None, deadband_deg: floa
         return "NONE"
 
     if heading_error_deg > deadband_deg:
-        return "START_RIGHT_CORRECTION"
+        return "RIGHT_PULSE 100"
 
     if heading_error_deg < -deadband_deg:
-        return "START_LEFT_CORRECTION"
+        return "LEFT_PULSE 100"
 
     return "STOP_CORRECTION"
 
@@ -314,10 +314,10 @@ def command_for_vision_tracking(
         return "NONE"
 
     if measurement.orientation_deg > orientation_deadband_deg:
-        return "START_RIGHT_CORRECTION"
+        return "LEFT_PULSE 100"
 
     if measurement.orientation_deg < -orientation_deadband_deg:
-        return "START_LEFT_CORRECTION"
+        return "RIGHT_PULSE 100"
 
     return "STOP_CORRECTION"
 
@@ -328,6 +328,8 @@ def send_if_changed(
     last_sent_command: str,
     program_start_time: float,
     movement_start_time: float | None,
+    heading_error_deg: float | None = None,
+    tag_orientation_deg: float | None = None,
 ) -> str:
     """
     Send a raw command only when it changes.
@@ -338,6 +340,8 @@ def send_if_changed(
         last_sent_command: Last transmitted command.
         program_start_time: Validation program start time.
         movement_start_time: Time when START_FORWARD was sent.
+        heading_error_deg: Optional heading error for transmission logs.
+        tag_orientation_deg: Optional tag orientation for transmission logs.
 
     Returns:
         Updated last transmitted command.
@@ -350,6 +354,8 @@ def send_if_changed(
         command,
         program_start_time,
         movement_start_time,
+        heading_error_deg,
+        tag_orientation_deg,
     )
     return command
 
@@ -359,6 +365,8 @@ def transmit_command(
     command: str,
     program_start_time: float,
     movement_start_time: float | None,
+    heading_error_deg: float | None = None,
+    tag_orientation_deg: float | None = None,
 ) -> bool:
     """
     Send one serial command with timestamped validation logging.
@@ -368,12 +376,17 @@ def transmit_command(
         command: Raw serial command.
         program_start_time: Validation program start time.
         movement_start_time: Time when START_FORWARD was sent.
+        heading_error_deg: Optional heading error for transmission logs.
+        tag_orientation_deg: Optional tag orientation for transmission logs.
 
     Returns:
         True if the serial write succeeds.
     """
     now = time.monotonic()
     elapsed_time_sec = now - program_start_time
+    print("Heading Error:", format_display(heading_error_deg, " deg", signed=True))
+    print("Tag Orientation:", format_display(tag_orientation_deg, " deg", signed=True))
+    print("Command Sent:", command)
     print(f"TX >>> {command}")
     print(f"[{elapsed_time_sec:.3f}s] TX >>> {command}")
 
@@ -871,6 +884,8 @@ def run_validation(args: argparse.Namespace) -> None:
                     current_command,
                     start_time,
                     movement_start_time,
+                    heading_error_deg,
+                    measurement.orientation_deg,
                 )
 
                 if alignment_state == "ALIGNED":
@@ -977,6 +992,8 @@ def run_validation(args: argparse.Namespace) -> None:
                         current_command,
                         start_time,
                         movement_start_time,
+                        heading_error_deg,
+                        measurement.orientation_deg,
                     )
 
                 elif tag_visible:
@@ -1003,6 +1020,8 @@ def run_validation(args: argparse.Namespace) -> None:
                         current_command,
                         start_time,
                         movement_start_time,
+                        heading_error_deg,
+                        measurement.orientation_deg,
                     )
 
                     if not tag_acquired:
@@ -1049,6 +1068,8 @@ def run_validation(args: argparse.Namespace) -> None:
                         current_command,
                         start_time,
                         movement_start_time,
+                        heading_error_deg,
+                        measurement.orientation_deg,
                     )
 
             if (now - last_csv_time) >= args.csv_interval:
