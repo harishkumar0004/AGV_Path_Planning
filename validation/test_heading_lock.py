@@ -745,6 +745,7 @@ def run_validation(args: argparse.Namespace) -> None:
     tag_acquired = False
     active_tag_id: int | None = None
     last_visible_tag_id: int | None = None
+    ignored_tag_id_logged: int | None = None
 
     if not perception_manager.initialize():
         print("PerceptionManager failed to initialize camera.")
@@ -844,19 +845,37 @@ def run_validation(args: argparse.Namespace) -> None:
                     log_transition("HEADING_HOLD")
 
             elif moving_started:
-                if tag_visible:
-                    if state != "VISION_TRACKING":
+                if (
+                    tag_visible
+                    and measurement.tag_id == active_tag_id
+                    and state != "VISION_TRACKING"
+                ):
+                    if ignored_tag_id_logged != measurement.tag_id:
+                        print(f"Ignoring Current Tag: {measurement.tag_id}")
+                        ignored_tag_id_logged = measurement.tag_id
+
+                    desired_command = command_for_heading_hold(
+                        heading_error_deg,
+                        args.heading_deadband,
+                    )
+                    current_command = send_if_changed(
+                        serial_controller,
+                        desired_command,
+                        current_command,
+                    )
+
+                elif tag_visible:
+                    if measurement.tag_id != active_tag_id:
+                        print(f"Next Tag Detected: {measurement.tag_id}")
+                        if state == "HEADING_HOLD":
+                            print("HEADING_HOLD -> VISION_TRACKING")
                         state = "VISION_TRACKING"
                         tag_acquired = False
                         acquisition_stable_since = None
                         acquisition_status = None
                         active_tag_id = measurement.tag_id
+                        ignored_tag_id_logged = None
                         log_transition("VISION_TRACKING")
-                    elif measurement.tag_id != active_tag_id:
-                        tag_acquired = False
-                        acquisition_stable_since = None
-                        acquisition_status = None
-                        active_tag_id = measurement.tag_id
 
                     last_visible_tag_id = measurement.tag_id
                     desired_command = command_for_vision_tracking(
