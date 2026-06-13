@@ -326,6 +326,8 @@ def send_if_changed(
     serial_controller: SerialMotorController,
     command: str,
     last_sent_command: str,
+    program_start_time: float,
+    movement_start_time: float | None,
 ) -> str:
     """
     Send a raw command only when it changes.
@@ -334,6 +336,8 @@ def send_if_changed(
         serial_controller: ESP32 serial controller.
         command: Desired command.
         last_sent_command: Last transmitted command.
+        program_start_time: Validation program start time.
+        movement_start_time: Time when START_FORWARD was sent.
 
     Returns:
         Updated last transmitted command.
@@ -341,8 +345,41 @@ def send_if_changed(
     if command == "NONE" or command == last_sent_command:
         return last_sent_command
 
-    serial_controller.send_raw_command(command, force=True)
+    transmit_command(
+        serial_controller,
+        command,
+        program_start_time,
+        movement_start_time,
+    )
     return command
+
+
+def transmit_command(
+    serial_controller: SerialMotorController,
+    command: str,
+    program_start_time: float,
+    movement_start_time: float | None,
+) -> bool:
+    """
+    Send one serial command with timestamped validation logging.
+
+    Args:
+        serial_controller: ESP32 serial controller.
+        command: Raw serial command.
+        program_start_time: Validation program start time.
+        movement_start_time: Time when START_FORWARD was sent.
+
+    Returns:
+        True if the serial write succeeds.
+    """
+    now = time.monotonic()
+    elapsed_time_sec = now - program_start_time
+    print(f"[{elapsed_time_sec:.3f}s] TX >>> {command}")
+
+    if movement_start_time is not None:
+        print(f"Elapsed since START_FORWARD: {now - movement_start_time:.3f} s")
+
+    return serial_controller.send_raw_command(command, force=True)
 
 
 def evaluate_start_gate(
@@ -740,6 +777,7 @@ def run_validation(args: argparse.Namespace) -> None:
     last_log_time = 0.0
     last_csv_time = 0.0
     start_time = time.monotonic()
+    movement_start_time: float | None = None
     moving_started = False
     start_forward_sent = False
     tag_acquired = False
@@ -780,7 +818,12 @@ def run_validation(args: argparse.Namespace) -> None:
 
             if key in (ord("s"), ord("S")):
                 current_command = "STOP"
-                serial_controller.send_raw_command(current_command, force=True)
+                transmit_command(
+                    serial_controller,
+                    current_command,
+                    start_time,
+                    movement_start_time,
+                )
                 state = "STOPPED"
                 log_transition("STOPPED")
 
@@ -798,12 +841,19 @@ def run_validation(args: argparse.Namespace) -> None:
                     serial_controller,
                     desired_command,
                     current_command,
+                    start_time,
+                    movement_start_time,
                 )
 
                 if alignment_state == "ALIGNED":
                     state = "CALIBRATE_IMU_TAG1"
                     current_command = "CALIBRATE_IMU"
-                    serial_controller.send_raw_command(current_command, force=True)
+                    transmit_command(
+                        serial_controller,
+                        current_command,
+                        start_time,
+                        movement_start_time,
+                    )
                     imu_reader.latest_heading_deg = None
                     imu_reader.latest_status = "IMU_CALIBRATING"
                     reference_heading_deg = None
@@ -839,7 +889,13 @@ def run_validation(args: argparse.Namespace) -> None:
                     print("START GATE PASSED")
                     print("START_FORWARD")
                     current_command = "START_FORWARD"
-                    serial_controller.send_raw_command(current_command, force=True)
+                    transmit_command(
+                        serial_controller,
+                        current_command,
+                        start_time,
+                        movement_start_time,
+                    )
+                    movement_start_time = time.monotonic()
                     print("TX: START_FORWARD")
                     reference_heading_deg = current_heading_deg
                     heading_error_deg = 0.0 if reference_heading_deg is not None else None
@@ -848,11 +904,25 @@ def run_validation(args: argparse.Namespace) -> None:
                     tag_acquired = True
                     active_tag_id = 1
                     last_visible_tag_id = 1
-                    state = "HEADING_HOLD"
-                    log_transition("HEADING_HOLD")
+                    state = "FORWARD_START_DELAY"
+                    log_transition("FORWARD_START_DELAY")
 
             elif moving_started:
-                if (
+                if state == "FORWARD_START_DELAY":
+                    if movement_start_time is not None:
+                        print(
+                            "Elapsed since START_FORWARD: "
+                            f"{now - movement_start_time:.3f} s"
+                        )
+
+                    if (
+                        movement_start_time is not None
+                        and (now - movement_start_time) >= 1.0
+                    ):
+                        state = "HEADING_HOLD"
+                        log_transition("HEADING_HOLD")
+
+                elif (
                     tag_visible
                     and measurement.tag_id == active_tag_id
                     and state != "VISION_TRACKING"
@@ -869,6 +939,8 @@ def run_validation(args: argparse.Namespace) -> None:
                         serial_controller,
                         desired_command,
                         current_command,
+                        start_time,
+                        movement_start_time,
                     )
 
                 elif tag_visible:
@@ -893,6 +965,8 @@ def run_validation(args: argparse.Namespace) -> None:
                         serial_controller,
                         desired_command,
                         current_command,
+                        start_time,
+                        movement_start_time,
                     )
 
                     if not tag_acquired:
@@ -937,6 +1011,8 @@ def run_validation(args: argparse.Namespace) -> None:
                         serial_controller,
                         desired_command,
                         current_command,
+                        start_time,
+                        movement_start_time,
                     )
 
             if (now - last_csv_time) >= args.csv_interval:
@@ -989,7 +1065,12 @@ def run_validation(args: argparse.Namespace) -> None:
     except KeyboardInterrupt:
         print("Stopping continuous heading-hold validation.")
     finally:
-        serial_controller.send_raw_command("STOP", force=True)
+        transmit_command(
+            serial_controller,
+            "STOP",
+            start_time,
+            movement_start_time,
+        )
         serial_controller.disconnect()
         perception_manager.release()
         cv2.destroyAllWindows()
