@@ -901,12 +901,12 @@ def run_validation(args: argparse.Namespace) -> None:
                     log_transition("CALIBRATE_IMU")
 
             elif state == "CALIBRATE_IMU":
-                if calibration_sent and current_heading_deg is not None:
-                    state = "CAPTURE_REFERENCE_HEADING"
-                    log_transition("CAPTURE_REFERENCE_HEADING")
-
-            elif state == "CAPTURE_REFERENCE_HEADING":
-                if current_heading_deg is not None and not start_forward_sent:
+                if (
+                    calibration_sent
+                    and current_heading_deg is not None
+                    and not start_forward_sent
+                ):
+                    print("IMU_READY RECEIVED")
                     reference_heading_deg = current_heading_deg
                     heading_error_deg = 0.0
                     print(
@@ -928,6 +928,7 @@ def run_validation(args: argparse.Namespace) -> None:
                     tag_acquired = True
                     active_tag_id = 1
                     last_visible_tag_id = 1
+                    print("ENTERING HEADING_HOLD")
                     state = "HEADING_HOLD"
                     log_transition("HEADING_HOLD")
 
