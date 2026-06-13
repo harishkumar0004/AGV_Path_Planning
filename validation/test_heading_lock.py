@@ -702,7 +702,7 @@ def log_terminal(
     current_command: str,
 ) -> None:
     """Print one terminal diagnostic block."""
-    print("State:", state)
+    print("Current State:", state)
     print("Reference Heading:", format_display(reference_heading_deg, " deg"))
     print("Current Heading:", format_display(current_heading_deg, " deg"))
     print("Heading Error:", format_display(heading_error_deg, " deg", signed=True))
@@ -710,7 +710,7 @@ def log_terminal(
     print("Position Error:", format_display(measurement.position_error_x, " px", decimals=0, signed=True))
     print("Tag Visible:", "YES" if tag_visible else "NO")
     print("Tag Acquired:", "YES" if tag_acquired else "NO")
-    print("Current Command:", current_command)
+    print("Last Command Sent:", current_command)
     print()
 
 
@@ -741,6 +741,7 @@ def run_validation(args: argparse.Namespace) -> None:
     last_csv_time = 0.0
     start_time = time.monotonic()
     moving_started = False
+    start_forward_sent = False
     tag_acquired = False
     active_tag_id: int | None = None
     last_visible_tag_id: int | None = None
@@ -825,7 +826,7 @@ def run_validation(args: argparse.Namespace) -> None:
                     args.start_gate_duration,
                 )
 
-                if gate_status.status_text == "READY_TO_MOVE":
+                if gate_status.status_text == "READY_TO_MOVE" and not start_forward_sent:
                     print("Gate Orientation:", pass_fail_text(gate_status.orientation_pass))
                     print("Gate Position:", pass_fail_text(gate_status.position_pass))
                     print("START GATE PASSED")
@@ -835,11 +836,12 @@ def run_validation(args: argparse.Namespace) -> None:
                     reference_heading_deg = current_heading_deg
                     heading_error_deg = 0.0 if reference_heading_deg is not None else None
                     moving_started = True
+                    start_forward_sent = True
                     tag_acquired = True
                     active_tag_id = 1
                     last_visible_tag_id = 1
-                    state = "VISION_TRACKING"
-                    log_transition("VISION_TRACKING")
+                    state = "HEADING_HOLD"
+                    log_transition("HEADING_HOLD")
 
             elif moving_started:
                 if tag_visible:
