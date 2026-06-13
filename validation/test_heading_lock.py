@@ -374,10 +374,17 @@ def transmit_command(
     """
     now = time.monotonic()
     elapsed_time_sec = now - program_start_time
+    print(f"TX >>> {command}")
     print(f"[{elapsed_time_sec:.3f}s] TX >>> {command}")
 
     if movement_start_time is not None:
         print(f"Elapsed since START_FORWARD: {now - movement_start_time:.3f} s")
+    elif command in {
+        "START_LEFT_CORRECTION",
+        "START_RIGHT_CORRECTION",
+        "STOP_CORRECTION",
+    }:
+        print(f"WARNING: {command} is being sent before START_FORWARD")
 
     return serial_controller.send_raw_command(command, force=True)
 
@@ -499,6 +506,7 @@ def log_transition(state: str) -> None:
     Args:
         state: New validation state.
     """
+    print(f"STATE TRANSITION >>> {state}")
     print(state)
 
 
@@ -885,6 +893,7 @@ def run_validation(args: argparse.Namespace) -> None:
                 print("Vision Gate Status:", gate_status.status_text)
 
                 if gate_status.status_text == "READY_TO_MOVE":
+                    print("## VISION START GATE PASSED")
                     print("VISION START GATE PASSED")
                     current_command = "CALIBRATE_IMU"
                     transmit_command(
@@ -906,14 +915,18 @@ def run_validation(args: argparse.Namespace) -> None:
                     and current_heading_deg is not None
                     and not start_forward_sent
                 ):
+                    print("## IMU_READY RECEIVED")
                     print("IMU_READY RECEIVED")
+                    log_transition("CAPTURE_REFERENCE_HEADING")
                     reference_heading_deg = current_heading_deg
                     heading_error_deg = 0.0
+                    print("## REFERENCE HEADING CAPTURED")
                     print(
                         "REFERENCE HEADING CAPTURED:",
                         format_display(reference_heading_deg, " deg", signed=True),
                     )
                     current_command = "START_FORWARD"
+                    print("## SENDING START_FORWARD")
                     print("START_FORWARD")
                     transmit_command(
                         serial_controller,
@@ -928,6 +941,7 @@ def run_validation(args: argparse.Namespace) -> None:
                     tag_acquired = True
                     active_tag_id = 1
                     last_visible_tag_id = 1
+                    print("## ENTERING HEADING_HOLD")
                     print("ENTERING HEADING_HOLD")
                     state = "HEADING_HOLD"
                     log_transition("HEADING_HOLD")
