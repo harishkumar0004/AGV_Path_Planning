@@ -936,18 +936,29 @@ def run_validation(args: argparse.Namespace) -> None:
                     )
                     movement_start_time = time.monotonic()
                     print("TX: START_FORWARD")
+                    print("START_FORWARD SENT")
                     moving_started = True
                     start_forward_sent = True
                     tag_acquired = True
                     active_tag_id = 1
                     last_visible_tag_id = 1
-                    print("## ENTERING HEADING_HOLD")
-                    print("ENTERING HEADING_HOLD")
-                    state = "HEADING_HOLD"
-                    log_transition("HEADING_HOLD")
+                    state = "FORWARD_START_DELAY"
+                    log_transition("FORWARD_START_DELAY")
 
             elif moving_started:
-                if (
+                if state == "FORWARD_START_DELAY":
+                    print("FORWARD START DELAY ACTIVE")
+                    if (
+                        movement_start_time is not None
+                        and (now - movement_start_time) >= 1.0
+                    ):
+                        print("FORWARD START DELAY COMPLETE")
+                        print("## ENTERING HEADING_HOLD")
+                        print("ENTERING HEADING_HOLD")
+                        state = "HEADING_HOLD"
+                        log_transition("HEADING_HOLD")
+
+                elif (
                     tag_visible
                     and measurement.tag_id == active_tag_id
                     and state != "VISION_TRACKING"
