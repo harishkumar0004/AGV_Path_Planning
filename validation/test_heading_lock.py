@@ -50,8 +50,18 @@ class StartGateStatus:
     status_text: str
 
 
-class TagToTagLogger:
-    """Logs tag-to-tag validation measurements to CSV."""
+@dataclass
+class AcquisitionStatus:
+    """Stores continuous tag acquisition status while moving."""
+
+    orientation_pass: bool
+    position_pass: bool
+    stable_time_sec: float
+    status_text: str
+
+
+class ContinuousNavigationLogger:
+    """Logs continuous tag-to-tag heading-hold validation samples."""
 
     def __init__(self, csv_path: Path) -> None:
         """
@@ -75,6 +85,9 @@ class TagToTagLogger:
                     "heading_error_deg",
                     "tag_orientation_deg",
                     "position_error_x",
+                    "tag_visible",
+                    "tag_acquired",
+                    "command",
                 ]
             )
 
@@ -86,6 +99,9 @@ class TagToTagLogger:
         reference_heading_deg: float | None,
         current_heading_deg: float | None,
         heading_error_deg: float | None,
+        tag_visible: bool,
+        tag_acquired: bool,
+        command: str,
     ) -> None:
         """
         Append one validation row.
@@ -97,6 +113,9 @@ class TagToTagLogger:
             reference_heading_deg: Stored IMU reference heading.
             current_heading_deg: Latest IMU heading.
             heading_error_deg: Current heading error.
+            tag_visible: True when a tag is visible.
+            tag_acquired: True after stable vision lock on current tag.
+            command: Current serial correction command.
         """
         with self.csv_path.open("a", newline="") as csv_file:
             writer = csv.writer(csv_file)
@@ -110,6 +129,9 @@ class TagToTagLogger:
                     format_csv(heading_error_deg),
                     format_csv(measurement.orientation_deg),
                     format_csv(measurement.position_error_x),
+                    "YES" if tag_visible else "NO",
+                    "YES" if tag_acquired else "NO",
+                    command,
                 ]
             )
 
@@ -200,54 +222,41 @@ def wrap_angle_deg(angle_deg: float) -> float:
     return angle_deg
 
 
-def choose_orientation_state(
+def choose_initial_orientation_state(
     orientation_deg: float | None,
-    start_threshold_deg: float,
-    stop_tolerance_deg: float,
-    current_state: str,
+    tolerance_deg: float,
 ) -> str:
     """
-    Choose continuous orientation-alignment state.
+    Choose the initial stationary Tag1 orientation alignment command state.
 
     Args:
         orientation_deg: Current AprilTag orientation.
-        start_threshold_deg: Angle that starts continuous correction.
-        stop_tolerance_deg: Angle that completes alignment.
-        current_state: Current orientation state.
+        tolerance_deg: Alignment tolerance in degrees.
 
     Returns:
-        WAITING, ALIGNING_LEFT, ALIGNING_RIGHT, ALIGNED, or TAG_LOST.
+        ALIGNING_LEFT, ALIGNING_RIGHT, ALIGNED, or TAG_LOST.
     """
     if orientation_deg is None:
         return "TAG_LOST"
 
-    if abs(orientation_deg) <= stop_tolerance_deg:
+    if abs(orientation_deg) <= tolerance_deg:
         return "ALIGNED"
 
-    if current_state == "ALIGNING_LEFT" and orientation_deg > stop_tolerance_deg:
+    if orientation_deg > tolerance_deg:
         return "ALIGNING_RIGHT"
 
-    if current_state == "ALIGNING_RIGHT" and orientation_deg < -stop_tolerance_deg:
-        return "ALIGNING_LEFT"
-
-    if orientation_deg > start_threshold_deg:
-        return "ALIGNING_RIGHT"
-
-    if orientation_deg < -start_threshold_deg:
-        return "ALIGNING_LEFT"
-
-    return current_state
+    return "ALIGNING_LEFT"
 
 
-def command_for_orientation_state(state: str) -> str:
+def command_for_alignment_state(state: str) -> str:
     """
-    Convert orientation-alignment state to validation serial command.
+    Convert alignment state to ESP32 validation command.
 
     Args:
-        state: Orientation-alignment state.
+        state: Alignment state.
 
     Returns:
-        START_LEFT_CORRECTION, START_RIGHT_CORRECTION, STOP_CORRECTION, or NONE.
+        Serial command string or NONE.
     """
     if state == "ALIGNING_LEFT":
         return "START_LEFT_CORRECTION"
@@ -259,6 +268,58 @@ def command_for_orientation_state(state: str) -> str:
         return "STOP_CORRECTION"
 
     return "NONE"
+
+
+def command_for_heading_hold(heading_error_deg: float | None, deadband_deg: float) -> str:
+    """
+    Choose correction command from IMU heading error.
+
+    Args:
+        heading_error_deg: Current heading error.
+        deadband_deg: Heading deadband.
+
+    Returns:
+        START_LEFT_CORRECTION, START_RIGHT_CORRECTION, STOP_CORRECTION, or NONE.
+    """
+    if heading_error_deg is None:
+        return "NONE"
+
+    if heading_error_deg > deadband_deg:
+        return "START_LEFT_CORRECTION"
+
+    if heading_error_deg < -deadband_deg:
+        return "START_RIGHT_CORRECTION"
+
+    return "STOP_CORRECTION"
+
+
+def command_for_vision_tracking(
+    measurement: TagMeasurement,
+    orientation_deadband_deg: float,
+) -> str:
+    """
+    Choose correction command from live AprilTag orientation.
+
+    Orientation is the primary control input. Position error is displayed and
+    logged, but not used for command generation in this validation phase.
+
+    Args:
+        measurement: Latest tag measurement.
+        orientation_deadband_deg: Vision orientation deadband.
+
+    Returns:
+        START_LEFT_CORRECTION, START_RIGHT_CORRECTION, STOP_CORRECTION, or NONE.
+    """
+    if measurement.orientation_deg is None:
+        return "NONE"
+
+    if measurement.orientation_deg > orientation_deadband_deg:
+        return "START_LEFT_CORRECTION"
+
+    if measurement.orientation_deg < -orientation_deadband_deg:
+        return "START_RIGHT_CORRECTION"
+
+    return "STOP_CORRECTION"
 
 
 def send_if_changed(
@@ -341,18 +402,57 @@ def evaluate_start_gate(
     )
 
 
-def detect_target_tag(measurement: TagMeasurement, target_tag_id: int) -> bool:
+def evaluate_tag_acquisition(
+    measurement: TagMeasurement,
+    stable_since: float | None,
+    now: float,
+    stable_duration_sec: float,
+) -> tuple[AcquisitionStatus, float | None]:
     """
-    Check whether the expected route tag is currently visible.
+    Check whether a visible tag has been stably acquired while moving.
 
     Args:
-        measurement: Latest AprilTag measurement.
-        target_tag_id: Expected tag ID.
+        measurement: Latest tag measurement.
+        stable_since: Time when all acquisition conditions became true.
+        now: Current monotonic time.
+        stable_duration_sec: Required stable duration.
 
     Returns:
-        True if the expected tag is visible.
+        Acquisition status and updated stable start time.
     """
-    return measurement.tag_id == target_tag_id
+    orientation_pass = (
+        measurement.orientation_deg is not None
+        and abs(measurement.orientation_deg) <= 2.0
+    )
+    position_pass = (
+        measurement.position_error_x is not None
+        and abs(measurement.position_error_x) <= 10.0
+    )
+
+    if orientation_pass and position_pass:
+        if stable_since is None:
+            stable_since = now
+
+        stable_time_sec = now - stable_since
+        status_text = (
+            "TAG_READY"
+            if stable_time_sec >= stable_duration_sec
+            else f"TAG_STABLE_{int(stable_time_sec * 1000)}ms"
+        )
+    else:
+        stable_since = None
+        stable_time_sec = 0.0
+        status_text = "TRACKING_TAG"
+
+    return (
+        AcquisitionStatus(
+            orientation_pass=orientation_pass,
+            position_pass=position_pass,
+            stable_time_sec=stable_time_sec,
+            status_text=status_text,
+        ),
+        stable_since,
+    )
 
 
 def log_transition(state: str) -> None:
@@ -365,25 +465,6 @@ def log_transition(state: str) -> None:
     print(state)
 
 
-def begin_alignment(
-    state: str,
-    imu_reader: ImuSerialReader,
-) -> tuple[str, str, float | None, float | None, bool, StartGateStatus | None]:
-    """
-    Reset state variables for a tag alignment phase.
-
-    Args:
-        state: Alignment state name.
-        imu_reader: IMU reader whose stale heading should be ignored later.
-
-    Returns:
-        Updated orientation state, last command, reference heading, gate timer,
-        calibration flag, and gate status.
-    """
-    imu_reader.latest_heading_deg = None
-    return "WAITING", "NONE", None, None, False, None
-
-
 def draw_visualization(
     frame,
     detection: dict[str, Any] | None,
@@ -394,10 +475,13 @@ def draw_visualization(
     elapsed_time_sec: float,
     state: str,
     current_command: str,
+    tag_visible: bool,
+    tag_acquired: bool,
     gate_status: StartGateStatus | None,
+    acquisition_status: AcquisitionStatus | None,
 ) -> None:
     """
-    Draw route validation diagnostics on the camera frame.
+    Draw continuous navigation diagnostics on the camera frame.
 
     Args:
         frame: Camera frame.
@@ -409,7 +493,10 @@ def draw_visualization(
         elapsed_time_sec: Time since validation start.
         state: Current validation state.
         current_command: Last command sent to ESP32.
-        gate_status: Latest start gate condition status.
+        tag_visible: True when a tag is visible.
+        tag_acquired: True after stable tag acquisition.
+        gate_status: Latest start gate status.
+        acquisition_status: Latest moving tag acquisition status.
     """
     image_height, image_width = frame.shape[:2]
     image_center_x = int(image_width / 2)
@@ -439,21 +526,23 @@ def draw_visualization(
             cv2.line(frame, corners[0], corners[1], (255, 0, 255), 3)
 
         if measurement.tag_center_x is not None and measurement.tag_center_y is not None:
-            tag_center = (
-                int(measurement.tag_center_x),
-                int(measurement.tag_center_y),
+            cv2.circle(
+                frame,
+                (int(measurement.tag_center_x), int(measurement.tag_center_y)),
+                6,
+                (0, 0, 255),
+                -1,
             )
-            cv2.circle(frame, tag_center, 6, (0, 0, 255), -1)
 
     text_lines = [
         ("State", state),
-        ("Current Tag", format_display(measurement.tag_id)),
         ("Reference Heading", format_display(reference_heading_deg, suffix=" deg", signed=True)),
         ("Current Heading", format_display(current_heading_deg, suffix=" deg", signed=True)),
         ("Heading Error", format_display(heading_error_deg, suffix=" deg", signed=True)),
         ("Tag Orientation", format_display(measurement.orientation_deg, suffix=" deg", signed=True)),
         ("Position Error X", format_display(measurement.position_error_x, decimals=0, signed=True)),
-        ("Stable Timer", gate_timer_text(gate_status)),
+        ("Tag Visible", "YES" if tag_visible else "NO"),
+        ("Tag Acquired", "YES" if tag_acquired else "NO"),
         ("Current Command", current_command),
         ("Elapsed Time", f"{elapsed_time_sec:.2f} s"),
     ]
@@ -474,23 +563,22 @@ def draw_visualization(
 
     if gate_status is not None:
         gate_lines = [
-            ("Orientation", pass_fail_text(gate_status.orientation_pass), pass_fail_color(gate_status.orientation_pass)),
-            ("Position", pass_fail_text(gate_status.position_pass), pass_fail_color(gate_status.position_pass)),
-            ("Heading", pass_fail_text(gate_status.heading_pass), pass_fail_color(gate_status.heading_pass)),
+            ("Gate Orientation", pass_fail_text(gate_status.orientation_pass), pass_fail_color(gate_status.orientation_pass)),
+            ("Gate Position", pass_fail_text(gate_status.position_pass), pass_fail_color(gate_status.position_pass)),
+            ("Gate Heading", pass_fail_text(gate_status.heading_pass), pass_fail_color(gate_status.heading_pass)),
+            ("Gate Stable", f"{gate_status.stable_time_sec:.2f} s", (255, 255, 255)),
             ("Gate Status", gate_status.status_text, pass_fail_color(gate_status.status_text == "READY_TO_MOVE")),
         ]
+        y = draw_status_lines(frame, gate_lines, y)
 
-        for label, value, color in gate_lines:
-            cv2.putText(
-                frame,
-                f"{label}: {value}",
-                (20, y),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.62,
-                color,
-                2,
-            )
-            y += 28
+    if acquisition_status is not None:
+        acquisition_lines = [
+            ("Vision Orientation", pass_fail_text(acquisition_status.orientation_pass), pass_fail_color(acquisition_status.orientation_pass)),
+            ("Vision Position", pass_fail_text(acquisition_status.position_pass), pass_fail_color(acquisition_status.position_pass)),
+            ("Vision Stable", f"{acquisition_status.stable_time_sec:.2f} s", (255, 255, 255)),
+            ("Vision Status", acquisition_status.status_text, pass_fail_color(acquisition_status.status_text == "TAG_READY")),
+        ]
+        y = draw_status_lines(frame, acquisition_lines, y)
 
     cv2.putText(
         frame,
@@ -503,16 +591,39 @@ def draw_visualization(
     )
 
 
-def gate_timer_text(gate_status: StartGateStatus | None) -> str:
-    """Format the gate timer for overlay text."""
-    if gate_status is None:
-        return "None"
+def draw_status_lines(
+    frame,
+    lines: list[tuple[str, str, tuple[int, int, int]]],
+    y: int,
+) -> int:
+    """
+    Draw colored status lines.
 
-    return f"{gate_status.stable_time_sec:.2f} s"
+    Args:
+        frame: Camera frame.
+        lines: Label, value, color tuples.
+        y: Starting y position.
+
+    Returns:
+        Next y position.
+    """
+    for label, value, color in lines:
+        cv2.putText(
+            frame,
+            f"{label}: {value}",
+            (20, y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.62,
+            color,
+            2,
+        )
+        y += 28
+
+    return y
 
 
 def pass_fail_text(condition_passed: bool) -> str:
-    """Return PASS or FAIL for a boolean gate condition."""
+    """Return PASS or FAIL for a boolean condition."""
     return "PASS" if condition_passed else "FAIL"
 
 
@@ -586,7 +697,8 @@ def log_terminal(
     current_heading_deg: float | None,
     heading_error_deg: float | None,
     measurement: TagMeasurement,
-    gate_status: StartGateStatus | None,
+    tag_visible: bool,
+    tag_acquired: bool,
     current_command: str,
 ) -> None:
     """Print one terminal diagnostic block."""
@@ -595,40 +707,15 @@ def log_terminal(
     print("Current Heading:", format_display(current_heading_deg, " deg"))
     print("Heading Error:", format_display(heading_error_deg, " deg", signed=True))
     print("Tag Orientation:", format_display(measurement.orientation_deg, " deg", signed=True))
-    print("Position Error X:", format_display(measurement.position_error_x, " px", decimals=0, signed=True))
-    print("Command:", current_command)
-    if gate_status is not None:
-        print(f"Stable Time: {gate_status.stable_time_sec:.2f} s")
-        print("Gate Status:")
-        print(gate_status.status_text)
-    print()
-
-
-def print_tag_detection(
-    state: str,
-    measurement: TagMeasurement,
-    current_heading_deg: float | None,
-    elapsed_time_sec: float,
-) -> None:
-    """
-    Print information captured when a route tag is detected.
-
-    Args:
-        state: Detection state name.
-        measurement: Current tag measurement.
-        current_heading_deg: Latest IMU heading.
-        elapsed_time_sec: Time since validation start.
-    """
-    print(state)
-    print(f"Detection Time: {elapsed_time_sec:.2f} s")
-    print("Tag Orientation:", format_display(measurement.orientation_deg, " deg", signed=True))
-    print("Position Error X:", format_display(measurement.position_error_x, " px", decimals=0, signed=True))
-    print("Current Heading:", format_display(current_heading_deg, " deg", signed=True))
+    print("Position Error:", format_display(measurement.position_error_x, " px", decimals=0, signed=True))
+    print("Tag Visible:", "YES" if tag_visible else "NO")
+    print("Tag Acquired:", "YES" if tag_acquired else "NO")
+    print("Current Command:", current_command)
     print()
 
 
 def run_validation(args: argparse.Namespace) -> None:
-    """Run Tag1 -> Tag2 -> Tag3 stop-align-continue validation."""
+    """Run continuous tag-to-tag navigation with IMU heading hold."""
     application_state = ApplicationState()
     perception_manager = PerceptionManager(application_state)
     serial_controller = SerialMotorController(
@@ -640,20 +727,23 @@ def run_validation(args: argparse.Namespace) -> None:
         baudrate=args.baudrate,
         timeout=0.0,
     )
-    logger = TagToTagLogger(Path(args.csv).expanduser().resolve())
+    logger = ContinuousNavigationLogger(Path(args.csv).expanduser().resolve())
 
     state = "WAIT_FOR_TAG1"
-    orientation_state = "WAITING"
     current_command = "NONE"
     reference_heading_deg: float | None = None
     gate_stable_since: float | None = None
     gate_status: StartGateStatus | None = None
+    acquisition_stable_since: float | None = None
+    acquisition_status: AcquisitionStatus | None = None
     calibration_sent = False
     last_log_time = 0.0
     last_csv_time = 0.0
     start_time = time.monotonic()
-    stop_started_at: float | None = None
-    route_complete = False
+    moving_started = False
+    tag_acquired = False
+    active_tag_id: int | None = None
+    last_visible_tag_id: int | None = None
 
     if not perception_manager.initialize():
         print("PerceptionManager failed to initialize camera.")
@@ -671,6 +761,7 @@ def run_validation(args: argparse.Namespace) -> None:
             frame = perception_manager.last_frame
             detection = detections[0] if detections else None
             measurement = measure_tag(frame, detection)
+            tag_visible = measurement.tag_id is not None
 
             imu_reader.update_from_connection(serial_controller.serial_connection)
             current_heading_deg = imu_reader.get_heading()
@@ -691,64 +782,41 @@ def run_validation(args: argparse.Namespace) -> None:
                 state = "STOPPED"
                 log_transition("STOPPED")
 
-            if state == "WAIT_FOR_TAG1" and detect_target_tag(measurement, 1):
+            if state == "WAIT_FOR_TAG1" and measurement.tag_id == 1:
                 state = "ALIGN_TAG1"
-                orientation_state, current_command, reference_heading_deg, gate_stable_since, calibration_sent, gate_status = begin_alignment(
-                    state,
-                    imu_reader,
-                )
                 log_transition("ALIGN_TAG1")
 
-            elif state in {"ALIGN_TAG1", "ALIGN_TAG2", "ALIGN_TAG3"}:
-                next_orientation_state = choose_orientation_state(
+            elif state == "ALIGN_TAG1":
+                alignment_state = choose_initial_orientation_state(
                     measurement.orientation_deg,
-                    args.orientation_start_threshold,
                     args.orientation_tolerance,
-                    orientation_state,
+                )
+                desired_command = command_for_alignment_state(alignment_state)
+                current_command = send_if_changed(
+                    serial_controller,
+                    desired_command,
+                    current_command,
                 )
 
-                if next_orientation_state == "TAG_LOST":
-                    current_command = send_if_changed(
-                        serial_controller,
-                        "STOP_CORRECTION",
-                        current_command,
-                    )
-                else:
-                    orientation_state = next_orientation_state
-                    desired_command = command_for_orientation_state(orientation_state)
-                    current_command = send_if_changed(
-                        serial_controller,
-                        desired_command,
-                        current_command,
-                    )
-
-                    if orientation_state == "ALIGNED":
-                        if state == "ALIGN_TAG3":
-                            current_command = "TURN_RIGHT 50"
-                            serial_controller.send_raw_command(current_command, force=True)
-                            state = "ROUTE_COMPLETE"
-                            route_complete = True
-                            log_transition("ROUTE_COMPLETE")
-                        else:
-                            state = "CALIBRATE_IMU_TAG1" if state == "ALIGN_TAG1" else "CALIBRATE_IMU_TAG2"
-                            current_command = "CALIBRATE_IMU"
-                            serial_controller.send_raw_command(current_command, force=True)
-                            imu_reader.latest_heading_deg = None
-                            imu_reader.latest_status = "IMU_CALIBRATING"
-                            reference_heading_deg = None
-                            calibration_sent = True
-                            gate_stable_since = None
-                            gate_status = None
-
-            elif state in {"CALIBRATE_IMU_TAG1", "CALIBRATE_IMU_TAG2"}:
-                if calibration_sent and current_heading_deg is not None:
-                    reference_heading_deg = current_heading_deg
+                if alignment_state == "ALIGNED":
+                    state = "CALIBRATE_IMU_TAG1"
+                    current_command = "CALIBRATE_IMU"
+                    serial_controller.send_raw_command(current_command, force=True)
+                    imu_reader.latest_heading_deg = None
+                    imu_reader.latest_status = "IMU_CALIBRATING"
+                    reference_heading_deg = None
+                    calibration_sent = True
                     gate_stable_since = None
                     gate_status = None
-                    state = "START_GATE_TAG1" if state == "CALIBRATE_IMU_TAG1" else "START_GATE_TAG2"
-                    log_transition(state)
+                    log_transition("CALIBRATE_IMU_TAG1")
 
-            elif state in {"START_GATE_TAG1", "START_GATE_TAG2"}:
+            elif state == "CALIBRATE_IMU_TAG1":
+                if calibration_sent and current_heading_deg is not None:
+                    reference_heading_deg = current_heading_deg
+                    state = "START_GATE_TAG1"
+                    log_transition("START_GATE_TAG1")
+
+            elif state == "START_GATE_TAG1":
                 gate_status, gate_stable_since = evaluate_start_gate(
                     measurement,
                     heading_error_deg,
@@ -759,109 +827,99 @@ def run_validation(args: argparse.Namespace) -> None:
 
                 if gate_status.status_text == "READY_TO_MOVE":
                     print("START GATE PASSED")
-                    print("Orientation Error:", format_display(measurement.orientation_deg, " deg", signed=True))
-                    print("Position Error:", format_display(measurement.position_error_x, " px", decimals=0, signed=True))
-                    print("Heading Error:", format_display(heading_error_deg, " deg", signed=True))
-                    print(f"Stable Time: {gate_status.stable_time_sec:.2f} s")
                     print("START_FORWARD")
-
                     current_command = "START_FORWARD"
                     serial_controller.send_raw_command(current_command, force=True)
-                    if state == "START_GATE_TAG1":
-                        state = "MOVE_TO_TAG2"
+                    moving_started = True
+                    tag_acquired = True
+                    active_tag_id = 1
+                    last_visible_tag_id = 1
+                    state = "VISION_TRACKING"
+                    log_transition("VISION_TRACKING")
+
+            elif moving_started:
+                if tag_visible:
+                    if state != "VISION_TRACKING":
+                        state = "VISION_TRACKING"
+                        tag_acquired = False
+                        acquisition_stable_since = None
+                        acquisition_status = None
+                        active_tag_id = measurement.tag_id
+                        log_transition("VISION_TRACKING")
+                    elif measurement.tag_id != active_tag_id:
+                        tag_acquired = False
+                        acquisition_stable_since = None
+                        acquisition_status = None
+                        active_tag_id = measurement.tag_id
+
+                    last_visible_tag_id = measurement.tag_id
+                    desired_command = command_for_vision_tracking(
+                        measurement,
+                        args.vision_orientation_deadband,
+                    )
+                    current_command = send_if_changed(
+                        serial_controller,
+                        desired_command,
+                        current_command,
+                    )
+
+                    if not tag_acquired:
+                        acquisition_status, acquisition_stable_since = evaluate_tag_acquisition(
+                            measurement,
+                            acquisition_stable_since,
+                            now,
+                            args.tag_acquisition_duration,
+                        )
+
+                        if (
+                            acquisition_status.status_text == "TAG_READY"
+                            and current_heading_deg is not None
+                        ):
+                            tag_acquired = True
+                            reference_heading_deg = current_heading_deg
+                            heading_error_deg = 0.0
+                            print("TAG_ACQUIRED")
+                            print(
+                                "NEW_REFERENCE_HEADING:",
+                                format_display(reference_heading_deg, " deg", signed=True),
+                            )
+                            log_transition("TAG_ACQUIRED")
                     else:
-                        state = "MOVE_TO_TAG3"
-                    gate_status = None
-                    gate_stable_since = None
-                    log_transition(state)
+                        acquisition_status = None
 
-            elif state == "MOVE_TO_TAG2":
-                if (now - last_csv_time) >= args.csv_interval:
-                    logger.write(
-                        elapsed_time_sec,
-                        state,
-                        measurement,
-                        reference_heading_deg,
-                        current_heading_deg,
+                else:
+                    acquisition_status = None
+                    acquisition_stable_since = None
+                    if state == "VISION_TRACKING":
+                        print("TAG_LOST")
+                        if tag_acquired:
+                            print("HEADING_HOLD_RESTORED")
+                        state = "HEADING_HOLD"
+                        log_transition("HEADING_HOLD")
+
+                    desired_command = command_for_heading_hold(
                         heading_error_deg,
+                        args.heading_deadband,
                     )
-                    last_csv_time = now
+                    current_command = send_if_changed(
+                        serial_controller,
+                        desired_command,
+                        current_command,
+                    )
 
-                if detect_target_tag(measurement, 2):
-                    current_command = "STOP"
-                    serial_controller.send_raw_command(current_command, force=True)
-                    state = "TAG2_DETECTED"
-                    print_tag_detection(
-                        state,
-                        measurement,
-                        current_heading_deg,
-                        elapsed_time_sec,
-                    )
-                    logger.write(
-                        elapsed_time_sec,
-                        state,
-                        measurement,
-                        reference_heading_deg,
-                        current_heading_deg,
-                        heading_error_deg,
-                    )
-                    stop_started_at = now
-                    state = "STOPPING_TAG2"
-                    log_transition("STOPPING_TAG2")
-
-            elif state == "STOPPING_TAG2":
-                if stop_started_at is not None and (now - stop_started_at) >= args.stop_settle_time:
-                    state = "ALIGN_TAG2"
-                    orientation_state, current_command, reference_heading_deg, gate_stable_since, calibration_sent, gate_status = begin_alignment(
-                        state,
-                        imu_reader,
-                    )
-                    stop_started_at = None
-                    log_transition("ALIGN_TAG2")
-
-            elif state == "MOVE_TO_TAG3":
-                if (now - last_csv_time) >= args.csv_interval:
-                    logger.write(
-                        elapsed_time_sec,
-                        state,
-                        measurement,
-                        reference_heading_deg,
-                        current_heading_deg,
-                        heading_error_deg,
-                    )
-                    last_csv_time = now
-
-                if detect_target_tag(measurement, 3):
-                    current_command = "STOP"
-                    serial_controller.send_raw_command(current_command, force=True)
-                    state = "TAG3_DETECTED"
-                    print_tag_detection(
-                        state,
-                        measurement,
-                        current_heading_deg,
-                        elapsed_time_sec,
-                    )
-                    logger.write(
-                        elapsed_time_sec,
-                        state,
-                        measurement,
-                        reference_heading_deg,
-                        current_heading_deg,
-                        heading_error_deg,
-                    )
-                    stop_started_at = now
-                    state = "STOPPING_TAG3"
-                    log_transition("STOPPING_TAG3")
-
-            elif state == "STOPPING_TAG3":
-                if stop_started_at is not None and (now - stop_started_at) >= args.stop_settle_time:
-                    state = "ALIGN_TAG3"
-                    orientation_state, current_command, reference_heading_deg, gate_stable_since, calibration_sent, gate_status = begin_alignment(
-                        state,
-                        imu_reader,
-                    )
-                    stop_started_at = None
-                    log_transition("ALIGN_TAG3")
+            if (now - last_csv_time) >= args.csv_interval:
+                logger.write(
+                    elapsed_time_sec,
+                    state,
+                    measurement,
+                    reference_heading_deg,
+                    current_heading_deg,
+                    heading_error_deg,
+                    tag_visible,
+                    tag_acquired,
+                    current_command,
+                )
+                last_csv_time = now
 
             if (now - last_log_time) >= args.log_interval:
                 log_terminal(
@@ -870,7 +928,8 @@ def run_validation(args: argparse.Namespace) -> None:
                     current_heading_deg,
                     heading_error_deg,
                     measurement,
-                    gate_status,
+                    tag_visible,
+                    tag_acquired,
                     current_command,
                 )
                 last_log_time = now
@@ -886,63 +945,71 @@ def run_validation(args: argparse.Namespace) -> None:
                     elapsed_time_sec,
                     state,
                     current_command,
+                    tag_visible,
+                    tag_acquired,
                     gate_status,
+                    acquisition_status,
                 )
-                cv2.imshow("Tag-to-Tag Validation", frame)
+                cv2.imshow("Continuous Heading Hold Validation", frame)
 
-            if key in (ord("q"), ord("Q")) or route_complete:
+            if key in (ord("q"), ord("Q")):
                 break
     except KeyboardInterrupt:
-        print("Stopping tag-to-tag validation.")
+        print("Stopping continuous heading-hold validation.")
     finally:
-        if not route_complete:
-            serial_controller.send_raw_command("STOP", force=True)
+        serial_controller.send_raw_command("STOP", force=True)
         serial_controller.disconnect()
         perception_manager.release()
         cv2.destroyAllWindows()
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse tag-to-tag validation options."""
+    """Parse continuous heading-hold validation options."""
     parser = argparse.ArgumentParser(
-        description="Validation-only Tag1 -> Tag2 -> Tag3 navigation test.",
+        description="Validation-only continuous tag-to-tag navigation with heading hold.",
     )
     parser.add_argument("--port", default="/dev/ttyUSB0")
     parser.add_argument("--baudrate", type=int, default=115200)
     parser.add_argument(
-        "--orientation-start-threshold",
-        type=float,
-        default=2.0,
-        help="Start orientation correction above this tag angle.",
-    )
-    parser.add_argument(
         "--orientation-tolerance",
         type=float,
         default=2.0,
-        help="Finish orientation alignment within this angle.",
+        help="Initial Tag1 orientation alignment tolerance.",
+    )
+    parser.add_argument(
+        "--heading-deadband",
+        type=float,
+        default=0.5,
+        help="IMU heading-hold deadband in degrees.",
+    )
+    parser.add_argument(
+        "--vision-orientation-deadband",
+        type=float,
+        default=2.0,
+        help="AprilTag orientation deadband in degrees.",
+    )
+    parser.add_argument(
+        "--tag-acquisition-duration",
+        type=float,
+        default=0.5,
+        help="Seconds a visible tag must be stable before updating heading reference.",
     )
     parser.add_argument(
         "--csv",
-        default="validation/tag_to_tag_log.csv",
-        help="CSV file for tag-to-tag validation samples.",
+        default="validation/continuous_heading_hold_log.csv",
+        help="CSV file for continuous heading-hold validation samples.",
     )
     parser.add_argument(
         "--csv-interval",
         type=float,
         default=0.1,
-        help="Seconds between CSV samples while moving.",
+        help="Seconds between CSV samples.",
     )
     parser.add_argument(
         "--start-gate-duration",
         type=float,
         default=0.5,
-        help="Seconds that all start gate conditions must remain stable.",
-    )
-    parser.add_argument(
-        "--stop-settle-time",
-        type=float,
-        default=1.0,
-        help="Validation-only wait after STOP before starting tag alignment.",
+        help="Seconds that initial start gate conditions must remain stable.",
     )
     parser.add_argument(
         "--log-interval",
@@ -960,7 +1027,7 @@ if __name__ == "__main__":
 
     if DEPENDENCY_ERROR is not None:
         print(
-            "Tag-to-tag validation cannot start because a required "
+            "Continuous heading-hold validation cannot start because a required "
             f"dependency is missing: {DEPENDENCY_ERROR.name}"
         )
         print(
