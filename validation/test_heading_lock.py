@@ -243,9 +243,9 @@ def choose_initial_orientation_state(
         return "ALIGNED"
 
     if orientation_deg > tolerance_deg:
-        return "ALIGNING_RIGHT"
+        return "ALIGNING_LEFT"
 
-    return "ALIGNING_LEFT"
+    return "ALIGNING_RIGHT"
 
 
 def command_for_alignment_state(state: str) -> str:
@@ -285,10 +285,10 @@ def command_for_heading_hold(heading_error_deg: float | None, deadband_deg: floa
         return "NONE"
 
     if heading_error_deg > deadband_deg:
-        return "START_LEFT_CORRECTION"
+        return "START_RIGHT_CORRECTION"
 
     if heading_error_deg < -deadband_deg:
-        return "START_RIGHT_CORRECTION"
+        return "START_LEFT_CORRECTION"
 
     return "STOP_CORRECTION"
 
