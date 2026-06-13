@@ -549,6 +549,22 @@ def draw_visualization(
         markerSize=22,
         thickness=2,
     )
+    cv2.rectangle(
+        frame,
+        (image_center_x - 10, image_center_y - 80),
+        (image_center_x + 10, image_center_y + 80),
+        (255, 255, 0),
+        2,
+    )
+    cv2.putText(
+        frame,
+        "ALIGN BOX",
+        (image_center_x - 58, image_center_y - 90),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        (255, 255, 0),
+        2,
+    )
 
     if detection is not None:
         corners = [
@@ -600,11 +616,10 @@ def draw_visualization(
 
     if gate_status is not None:
         gate_lines = [
-            ("Gate Orientation", pass_fail_text(gate_status.orientation_pass), pass_fail_color(gate_status.orientation_pass)),
-            ("Gate Position", pass_fail_text(gate_status.position_pass), pass_fail_color(gate_status.position_pass)),
-            ("Gate Heading", pass_fail_text(gate_status.heading_pass), pass_fail_color(gate_status.heading_pass)),
-            ("Gate Stable", f"{gate_status.stable_time_sec:.2f} s", (255, 255, 255)),
-            ("Gate Status", gate_status.status_text, pass_fail_color(gate_status.status_text == "READY_TO_MOVE")),
+            ("Vision Orientation", pass_fail_text(gate_status.orientation_pass), pass_fail_color(gate_status.orientation_pass)),
+            ("Vision Position", pass_fail_text(gate_status.position_pass), pass_fail_color(gate_status.position_pass)),
+            ("Vision Stable", f"{gate_status.stable_time_sec:.2f} s", (255, 255, 255)),
+            ("Vision Gate Status", gate_status.status_text, pass_fail_color(gate_status.status_text == "READY_TO_MOVE")),
         ]
         y = draw_status_lines(frame, gate_lines, y)
 
@@ -737,6 +752,7 @@ def log_terminal(
     tag_visible: bool,
     tag_acquired: bool,
     current_command: str,
+    gate_status: StartGateStatus | None,
 ) -> None:
     """Print one terminal diagnostic block."""
     print("Current State:", state)
@@ -745,6 +761,10 @@ def log_terminal(
     print("Heading Error:", format_display(heading_error_deg, " deg", signed=True))
     print("Tag Orientation:", format_display(measurement.orientation_deg, " deg", signed=True))
     print("Position Error:", format_display(measurement.position_error_x, " px", decimals=0, signed=True))
+    print(
+        "Vision Gate Status:",
+        gate_status.status_text if gate_status is not None else "None",
+    )
     print("Tag Visible:", "YES" if tag_visible else "NO")
     print("Tag Acquired:", "YES" if tag_acquired else "NO")
     print("Last Command Sent:", current_command)
@@ -846,7 +866,26 @@ def run_validation(args: argparse.Namespace) -> None:
                 )
 
                 if alignment_state == "ALIGNED":
-                    state = "CALIBRATE_IMU_TAG1"
+                    gate_stable_since = None
+                    gate_status = None
+                    state = "VISION_START_GATE"
+                    log_transition("VISION_START_GATE")
+
+            elif state == "VISION_START_GATE":
+                gate_status, gate_stable_since = evaluate_start_gate(
+                    measurement,
+                    None,
+                    gate_stable_since,
+                    now,
+                    args.start_gate_duration,
+                )
+                print("Current State:", state)
+                print("Position Error X:", format_display(measurement.position_error_x, " px", decimals=0, signed=True))
+                print("Tag Orientation:", format_display(measurement.orientation_deg, " deg", signed=True))
+                print("Vision Gate Status:", gate_status.status_text)
+
+                if gate_status.status_text == "READY_TO_MOVE":
+                    print("VISION START GATE PASSED")
                     current_command = "CALIBRATE_IMU"
                     transmit_command(
                         serial_controller,
@@ -858,37 +897,24 @@ def run_validation(args: argparse.Namespace) -> None:
                     imu_reader.latest_status = "IMU_CALIBRATING"
                     reference_heading_deg = None
                     calibration_sent = True
-                    gate_stable_since = None
-                    gate_status = None
-                    log_transition("CALIBRATE_IMU_TAG1")
+                    state = "CALIBRATE_IMU"
+                    log_transition("CALIBRATE_IMU")
 
-            elif state == "CALIBRATE_IMU_TAG1":
+            elif state == "CALIBRATE_IMU":
                 if calibration_sent and current_heading_deg is not None:
-                    reference_heading_deg = None
-                    state = "START_GATE_TAG1"
-                    log_transition("START_GATE_TAG1")
+                    state = "CAPTURE_REFERENCE_HEADING"
+                    log_transition("CAPTURE_REFERENCE_HEADING")
 
-            elif state == "START_GATE_TAG1":
-                gate_status, gate_stable_since = evaluate_start_gate(
-                    measurement,
-                    heading_error_deg,
-                    gate_stable_since,
-                    now,
-                    args.start_gate_duration,
-                )
-                print("Current State:", state)
-                print("Gate Orientation:", pass_fail_text(gate_status.orientation_pass))
-                print("Gate Position:", pass_fail_text(gate_status.position_pass))
-                print(f"Gate Stable Time: {gate_status.stable_time_sec:.2f} s")
-                print("Gate Status:", gate_status.status_text)
-
-                if gate_status.status_text == "READY_TO_MOVE" and not start_forward_sent:
-                    print("ENTERED READY_TO_MOVE BLOCK")
-                    print("Gate Orientation:", pass_fail_text(gate_status.orientation_pass))
-                    print("Gate Position:", pass_fail_text(gate_status.position_pass))
-                    print("START GATE PASSED")
-                    print("START_FORWARD")
+            elif state == "CAPTURE_REFERENCE_HEADING":
+                if current_heading_deg is not None and not start_forward_sent:
+                    reference_heading_deg = current_heading_deg
+                    heading_error_deg = 0.0
+                    print(
+                        "REFERENCE HEADING CAPTURED:",
+                        format_display(reference_heading_deg, " deg", signed=True),
+                    )
                     current_command = "START_FORWARD"
+                    print("START_FORWARD")
                     transmit_command(
                         serial_controller,
                         current_command,
@@ -897,32 +923,16 @@ def run_validation(args: argparse.Namespace) -> None:
                     )
                     movement_start_time = time.monotonic()
                     print("TX: START_FORWARD")
-                    reference_heading_deg = current_heading_deg
-                    heading_error_deg = 0.0 if reference_heading_deg is not None else None
                     moving_started = True
                     start_forward_sent = True
                     tag_acquired = True
                     active_tag_id = 1
                     last_visible_tag_id = 1
-                    state = "FORWARD_START_DELAY"
-                    log_transition("FORWARD_START_DELAY")
+                    state = "HEADING_HOLD"
+                    log_transition("HEADING_HOLD")
 
             elif moving_started:
-                if state == "FORWARD_START_DELAY":
-                    if movement_start_time is not None:
-                        print(
-                            "Elapsed since START_FORWARD: "
-                            f"{now - movement_start_time:.3f} s"
-                        )
-
-                    if (
-                        movement_start_time is not None
-                        and (now - movement_start_time) >= 1.0
-                    ):
-                        state = "HEADING_HOLD"
-                        log_transition("HEADING_HOLD")
-
-                elif (
+                if (
                     tag_visible
                     and measurement.tag_id == active_tag_id
                     and state != "VISION_TRACKING"
@@ -1039,6 +1049,7 @@ def run_validation(args: argparse.Namespace) -> None:
                     tag_visible,
                     tag_acquired,
                     current_command,
+                    gate_status,
                 )
                 last_log_time = now
 
@@ -1092,7 +1103,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--heading-deadband",
         type=float,
-        default=0.5,
+        default=2.0,
         help="IMU heading-hold deadband in degrees.",
     )
     parser.add_argument(
