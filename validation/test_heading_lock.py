@@ -26,6 +26,16 @@ except ModuleNotFoundError as error:
     DEPENDENCY_ERROR = error
 
 
+TINY_ERROR_THRESHOLD_DEG = 0.5
+SMALL_ERROR_THRESHOLD_DEG = 2.0
+MEDIUM_ERROR_THRESHOLD_DEG = 4.0
+
+SMALL_PULSE_MS = 20
+LOW_PULSE_MS = 40
+MEDIUM_PULSE_MS = 60
+LARGE_PULSE_MS = 100
+
+
 @dataclass
 class TagMeasurement:
     """Stores camera-side AprilTag measurements for display and logging."""
@@ -77,17 +87,16 @@ class ContinuousNavigationLogger:
             writer = csv.writer(csv_file)
             writer.writerow(
                 [
-                    "timestamp_sec",
+                    "timestamp",
                     "state",
-                    "tag_id",
                     "reference_heading_deg",
                     "current_heading_deg",
                     "heading_error_deg",
-                    "tag_orientation_deg",
-                    "position_error_x",
+                    "pulse_duration_ms",
+                    "command_sent",
                     "tag_visible",
-                    "tag_acquired",
-                    "command",
+                    "tag_orientation_deg",
+                    "position_error_px",
                 ]
             )
 
@@ -123,15 +132,14 @@ class ContinuousNavigationLogger:
                 [
                     format_csv(timestamp_sec),
                     state,
-                    measurement.tag_id if measurement.tag_id is not None else "",
                     format_csv(reference_heading_deg),
                     format_csv(current_heading_deg),
                     format_csv(heading_error_deg),
+                    format_pulse_duration(command),
+                    command,
+                    "YES" if tag_visible else "NO",
                     format_csv(measurement.orientation_deg),
                     format_csv(measurement.position_error_x),
-                    "YES" if tag_visible else "NO",
-                    "YES" if tag_acquired else "NO",
-                    command,
                 ]
             )
 
@@ -284,13 +292,24 @@ def command_for_heading_hold(heading_error_deg: float | None, deadband_deg: floa
     if heading_error_deg is None:
         return "NONE"
 
-    if heading_error_deg > deadband_deg:
-        return "RIGHT_PULSE 50"
+    abs_error_deg = abs(heading_error_deg)
 
-    if heading_error_deg < -deadband_deg:
-        return "LEFT_PULSE 50"
+    if abs_error_deg < TINY_ERROR_THRESHOLD_DEG:
+        return "STOP_CORRECTION"
 
-    return "STOP_CORRECTION"
+    if abs_error_deg < deadband_deg:
+        pulse_ms = SMALL_PULSE_MS
+    elif abs_error_deg < SMALL_ERROR_THRESHOLD_DEG:
+        pulse_ms = LOW_PULSE_MS
+    elif abs_error_deg < MEDIUM_ERROR_THRESHOLD_DEG:
+        pulse_ms = MEDIUM_PULSE_MS
+    else:
+        pulse_ms = LARGE_PULSE_MS
+
+    if heading_error_deg > 0.0:
+        return f"RIGHT_PULSE {pulse_ms}"
+
+    return f"LEFT_PULSE {pulse_ms}"
 
 
 def command_for_vision_tracking(
@@ -764,6 +783,38 @@ def format_csv(value: float | None) -> str:
     return f"{value:.2f}"
 
 
+def pulse_duration_from_command(command: str) -> int | None:
+    """
+    Extract pulse duration from a pulse command.
+
+    Args:
+        command: Serial command string.
+
+    Returns:
+        Pulse duration in milliseconds, or None for non-pulse commands.
+    """
+    parts = command.split()
+    if len(parts) != 2:
+        return None
+
+    if parts[0] not in {"LEFT_PULSE", "RIGHT_PULSE"}:
+        return None
+
+    try:
+        return int(parts[1])
+    except ValueError:
+        return None
+
+
+def format_pulse_duration(command: str) -> str:
+    """Format pulse duration for CSV output."""
+    pulse_duration_ms = pulse_duration_from_command(command)
+    if pulse_duration_ms is None:
+        return ""
+
+    return str(pulse_duration_ms)
+
+
 def log_terminal(
     state: str,
     reference_heading_deg: float | None,
@@ -780,6 +831,11 @@ def log_terminal(
     print("Reference Heading:", format_display(reference_heading_deg, " deg"))
     print("Current Heading:", format_display(current_heading_deg, " deg"))
     print("Heading Error:", format_display(heading_error_deg, " deg", signed=True))
+    pulse_duration_ms = pulse_duration_from_command(current_command)
+    if pulse_duration_ms is None:
+        print("Pulse Duration: None")
+    else:
+        print(f"Pulse Duration: {pulse_duration_ms} ms")
     print("Tag Orientation:", format_display(measurement.orientation_deg, " deg", signed=True))
     print("Position Error:", format_display(measurement.position_error_x, " px", decimals=0, signed=True))
     print(
@@ -788,7 +844,7 @@ def log_terminal(
     )
     print("Tag Visible:", "YES" if tag_visible else "NO")
     print("Tag Acquired:", "YES" if tag_acquired else "NO")
-    print("Last Command Sent:", current_command)
+    print("Command Sent:", current_command)
     print()
 
 
