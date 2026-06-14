@@ -26,14 +26,18 @@ except ModuleNotFoundError as error:
     DEPENDENCY_ERROR = error
 
 
-TINY_ERROR_THRESHOLD_DEG = 0.5
-SMALL_ERROR_THRESHOLD_DEG = 2.0
-MEDIUM_ERROR_THRESHOLD_DEG = 4.0
+KP_HEADING = 100.0
+KI_HEADING = 0.0
+KD_HEADING = 0.0
 
-SMALL_PULSE_MS = 20
-LOW_PULSE_MS = 40
-MEDIUM_PULSE_MS = 60
-LARGE_PULSE_MS = 100
+HEADING_DEADBAND_DEG = 0.5
+MAX_INTEGRAL = 50.0
+MAX_CORRECTION = 1000.0
+
+BASE_FREQUENCY_HZ = 10000.0
+MIN_FREQUENCY_HZ = 7000.0
+MAX_FREQUENCY_HZ = 10000.0
+PID_UPDATE_INTERVAL_SEC = 0.05
 
 
 @dataclass
@@ -70,6 +74,142 @@ class AcquisitionStatus:
     status_text: str
 
 
+@dataclass
+class PIDResult:
+    """Stores one heading PID calculation for logging and serial output."""
+
+    heading_error_deg: float
+    kp: float
+    ki: float
+    kd: float
+    p_term: float
+    i_term: float
+    d_term: float
+    pid_output: float
+    left_frequency_hz: float
+    right_frequency_hz: float
+
+
+class HeadingPIDController:
+    """Converts IMU heading error into differential-drive wheel frequencies."""
+
+    def __init__(
+        self,
+        kp: float,
+        ki: float,
+        kd: float,
+        max_integral: float,
+        max_correction: float,
+        base_frequency_hz: float,
+        min_frequency_hz: float,
+        max_frequency_hz: float,
+    ) -> None:
+        """
+        Store PID gains and frequency limits.
+
+        Args:
+            kp: Proportional gain.
+            ki: Integral gain.
+            kd: Derivative gain.
+            max_integral: Integral anti-windup clamp.
+            max_correction: Maximum PID output magnitude.
+            base_frequency_hz: Forward drive base frequency.
+            min_frequency_hz: Minimum allowed wheel frequency.
+            max_frequency_hz: Maximum allowed wheel frequency.
+        """
+        self.kp = kp
+        self.ki = ki
+        self.kd = kd
+        self.max_integral = max_integral
+        self.max_correction = max_correction
+        self.base_frequency_hz = base_frequency_hz
+        self.min_frequency_hz = min_frequency_hz
+        self.max_frequency_hz = max_frequency_hz
+        self.integral = 0.0
+        self.previous_error_deg: float | None = None
+        self.previous_update_time: float | None = None
+
+    def reset(self) -> None:
+        """Clear stored PID state when a new heading reference is captured."""
+        self.integral = 0.0
+        self.previous_error_deg = None
+        self.previous_update_time = None
+
+    def update(
+        self,
+        reference_heading_deg: float,
+        current_heading_deg: float,
+        now: float,
+    ) -> PIDResult:
+        """
+        Calculate one PID update and convert it into left/right frequencies.
+
+        Args:
+            reference_heading_deg: Desired IMU heading.
+            current_heading_deg: Current IMU heading.
+            now: Current monotonic timestamp.
+
+        Returns:
+            PIDResult containing terms, output, and wheel frequencies.
+        """
+        heading_error_deg = wrap_angle_deg(reference_heading_deg - current_heading_deg)
+        if abs(heading_error_deg) < HEADING_DEADBAND_DEG:
+            heading_error_deg = 0.0
+
+        if self.previous_update_time is None:
+            delta_time_sec = PID_UPDATE_INTERVAL_SEC
+        else:
+            delta_time_sec = max(now - self.previous_update_time, 1e-6)
+
+        self.previous_update_time = now
+        self.integral += heading_error_deg * delta_time_sec
+        self.integral = clamp_float(
+            self.integral,
+            -self.max_integral,
+            self.max_integral,
+        )
+
+        if self.previous_error_deg is None:
+            derivative = 0.0
+        else:
+            derivative = (heading_error_deg - self.previous_error_deg) / delta_time_sec
+
+        self.previous_error_deg = heading_error_deg
+
+        p_term = self.kp * heading_error_deg
+        i_term = self.ki * self.integral
+        d_term = self.kd * derivative
+        pid_output = clamp_float(
+            p_term + i_term + d_term,
+            -self.max_correction,
+            self.max_correction,
+        )
+
+        left_frequency_hz = clamp_float(
+            self.base_frequency_hz - pid_output,
+            self.min_frequency_hz,
+            self.max_frequency_hz,
+        )
+        right_frequency_hz = clamp_float(
+            self.base_frequency_hz + pid_output,
+            self.min_frequency_hz,
+            self.max_frequency_hz,
+        )
+
+        return PIDResult(
+            heading_error_deg=heading_error_deg,
+            kp=self.kp,
+            ki=self.ki,
+            kd=self.kd,
+            p_term=p_term,
+            i_term=i_term,
+            d_term=d_term,
+            pid_output=pid_output,
+            left_frequency_hz=left_frequency_hz,
+            right_frequency_hz=right_frequency_hz,
+        )
+
+
 class ContinuousNavigationLogger:
     """Logs continuous tag-to-tag heading-hold validation samples."""
 
@@ -92,8 +232,15 @@ class ContinuousNavigationLogger:
                     "reference_heading_deg",
                     "current_heading_deg",
                     "heading_error_deg",
-                    "pulse_duration_ms",
-                    "command_sent",
+                    "kp",
+                    "ki",
+                    "kd",
+                    "p_term",
+                    "i_term",
+                    "d_term",
+                    "pid_output",
+                    "left_frequency_hz",
+                    "right_frequency_hz",
                     "tag_visible",
                     "tag_orientation_deg",
                     "position_error_px",
@@ -110,7 +257,7 @@ class ContinuousNavigationLogger:
         heading_error_deg: float | None,
         tag_visible: bool,
         tag_acquired: bool,
-        command: str,
+        pid_result: PIDResult | None,
     ) -> None:
         """
         Append one validation row.
@@ -124,7 +271,7 @@ class ContinuousNavigationLogger:
             heading_error_deg: Current heading error.
             tag_visible: True when a tag is visible.
             tag_acquired: True after stable vision lock on current tag.
-            command: Current serial correction command.
+            pid_result: Latest PID result, or None before PID starts.
         """
         with self.csv_path.open("a", newline="") as csv_file:
             writer = csv.writer(csv_file)
@@ -135,8 +282,15 @@ class ContinuousNavigationLogger:
                     format_csv(reference_heading_deg),
                     format_csv(current_heading_deg),
                     format_csv(heading_error_deg),
-                    format_pulse_duration(command),
-                    command,
+                    format_csv(pid_result.kp if pid_result is not None else None),
+                    format_csv(pid_result.ki if pid_result is not None else None),
+                    format_csv(pid_result.kd if pid_result is not None else None),
+                    format_csv(pid_result.p_term if pid_result is not None else None),
+                    format_csv(pid_result.i_term if pid_result is not None else None),
+                    format_csv(pid_result.d_term if pid_result is not None else None),
+                    format_csv(pid_result.pid_output if pid_result is not None else None),
+                    format_csv(pid_result.left_frequency_hz if pid_result is not None else None),
+                    format_csv(pid_result.right_frequency_hz if pid_result is not None else None),
                     "YES" if tag_visible else "NO",
                     format_csv(measurement.orientation_deg),
                     format_csv(measurement.position_error_x),
@@ -230,6 +384,91 @@ def wrap_angle_deg(angle_deg: float) -> float:
     return angle_deg
 
 
+def clamp_float(value: float, minimum: float, maximum: float) -> float:
+    """
+    Clamp a float into a safe range.
+
+    Args:
+        value: Input value.
+        minimum: Lowest allowed value.
+        maximum: Highest allowed value.
+
+    Returns:
+        Clamped value.
+    """
+    return max(minimum, min(maximum, value))
+
+
+def format_set_drive_command(left_frequency_hz: float, right_frequency_hz: float) -> str:
+    """
+    Build a human-readable ESP32 SET_DRIVE command.
+
+    Args:
+        left_frequency_hz: Left motor frequency.
+        right_frequency_hz: Right motor frequency.
+
+    Returns:
+        Serial command string.
+    """
+    return f"SET_DRIVE {left_frequency_hz:.0f} {right_frequency_hz:.0f}"
+
+
+def update_pid_drive_command(
+    serial_controller: SerialMotorController,
+    pid_controller: HeadingPIDController,
+    reference_heading_deg: float | None,
+    current_heading_deg: float | None,
+    current_command: str,
+    latest_pid_result: PIDResult | None,
+    last_pid_update_time: float,
+    now: float,
+    program_start_time: float,
+    movement_start_time: float | None,
+    tag_orientation_deg: float | None,
+) -> tuple[str, PIDResult | None, float]:
+    """
+    Send a 20 Hz SET_DRIVE command generated by the heading PID controller.
+
+    Args:
+        serial_controller: ESP32 serial controller.
+        pid_controller: PID controller instance.
+        reference_heading_deg: Desired heading.
+        current_heading_deg: Latest IMU heading.
+        current_command: Last command sent.
+        latest_pid_result: Most recent PID result.
+        last_pid_update_time: Last PID update timestamp.
+        now: Current monotonic timestamp.
+        program_start_time: Validation program start time.
+        movement_start_time: Time when START_FORWARD was sent.
+        tag_orientation_deg: Optional tag orientation for logging.
+
+    Returns:
+        Updated command, latest PID result, and PID timestamp.
+    """
+    if reference_heading_deg is None or current_heading_deg is None:
+        return current_command, latest_pid_result, last_pid_update_time
+
+    if (now - last_pid_update_time) < PID_UPDATE_INTERVAL_SEC:
+        return current_command, latest_pid_result, last_pid_update_time
+
+    pid_result = pid_controller.update(reference_heading_deg, current_heading_deg, now)
+    command = format_set_drive_command(
+        pid_result.left_frequency_hz,
+        pid_result.right_frequency_hz,
+    )
+    current_command = send_if_changed(
+        serial_controller,
+        command,
+        current_command,
+        program_start_time,
+        movement_start_time,
+        pid_result.heading_error_deg,
+        tag_orientation_deg,
+    )
+
+    return current_command, pid_result, now
+
+
 def choose_initial_orientation_state(
     orientation_deg: float | None,
     tolerance_deg: float,
@@ -251,9 +490,9 @@ def choose_initial_orientation_state(
         return "ALIGNED"
 
     if orientation_deg > tolerance_deg:
-        return "ALIGNING_RIGHT"
+        return "ALIGNING_LEFT"
 
-    return "ALIGNING_LEFT"
+    return "ALIGNING_RIGHT"
 
 
 def command_for_alignment_state(state: str) -> str:
@@ -276,69 +515,6 @@ def command_for_alignment_state(state: str) -> str:
         return "STOP_CORRECTION"
 
     return "NONE"
-
-
-def command_for_heading_hold(heading_error_deg: float | None, deadband_deg: float) -> str:
-    """
-    Choose correction command from IMU heading error.
-
-    Args:
-        heading_error_deg: Current heading error.
-        deadband_deg: Heading deadband.
-
-    Returns:
-        START_LEFT_CORRECTION, START_RIGHT_CORRECTION, STOP_CORRECTION, or NONE.
-    """
-    if heading_error_deg is None:
-        return "NONE"
-
-    abs_error_deg = abs(heading_error_deg)
-
-    if abs_error_deg < TINY_ERROR_THRESHOLD_DEG:
-        return "STOP_CORRECTION"
-
-    if abs_error_deg < deadband_deg:
-        pulse_ms = SMALL_PULSE_MS
-    elif abs_error_deg < SMALL_ERROR_THRESHOLD_DEG:
-        pulse_ms = LOW_PULSE_MS
-    elif abs_error_deg < MEDIUM_ERROR_THRESHOLD_DEG:
-        pulse_ms = MEDIUM_PULSE_MS
-    else:
-        pulse_ms = LARGE_PULSE_MS
-
-    if heading_error_deg > 0.0:
-        return f"RIGHT_PULSE {pulse_ms}"
-
-    return f"LEFT_PULSE {pulse_ms}"
-
-
-def command_for_vision_tracking(
-    measurement: TagMeasurement,
-    orientation_deadband_deg: float,
-) -> str:
-    """
-    Choose correction command from live AprilTag orientation.
-
-    Orientation is the primary control input. Position error is displayed and
-    logged, but not used for command generation in this validation phase.
-
-    Args:
-        measurement: Latest tag measurement.
-        orientation_deadband_deg: Vision orientation deadband.
-
-    Returns:
-        START_LEFT_CORRECTION, START_RIGHT_CORRECTION, STOP_CORRECTION, or NONE.
-    """
-    if measurement.orientation_deg is None:
-        return "NONE"
-
-    if measurement.orientation_deg > orientation_deadband_deg:
-        return "LEFT_PULSE 50"
-
-    if measurement.orientation_deg < -orientation_deadband_deg:
-        return "RIGHT_PULSE 50"
-
-    return "STOP_CORRECTION"
 
 
 def send_if_changed(
@@ -783,36 +959,22 @@ def format_csv(value: float | None) -> str:
     return f"{value:.2f}"
 
 
-def pulse_duration_from_command(command: str) -> int | None:
+def format_pid_value(pid_result: PIDResult | None, attribute: str, suffix: str = "") -> str:
     """
-    Extract pulse duration from a pulse command.
+    Format one optional PID field for terminal diagnostics.
 
     Args:
-        command: Serial command string.
+        pid_result: Latest PID result.
+        attribute: PIDResult field name.
+        suffix: Optional unit suffix.
 
     Returns:
-        Pulse duration in milliseconds, or None for non-pulse commands.
+        Formatted value or None.
     """
-    parts = command.split()
-    if len(parts) != 2:
-        return None
+    if pid_result is None:
+        return "None"
 
-    if parts[0] not in {"LEFT_PULSE", "RIGHT_PULSE"}:
-        return None
-
-    try:
-        return int(parts[1])
-    except ValueError:
-        return None
-
-
-def format_pulse_duration(command: str) -> str:
-    """Format pulse duration for CSV output."""
-    pulse_duration_ms = pulse_duration_from_command(command)
-    if pulse_duration_ms is None:
-        return ""
-
-    return str(pulse_duration_ms)
+    return format_display(getattr(pid_result, attribute), suffix=suffix, signed=True)
 
 
 def log_terminal(
@@ -825,17 +987,22 @@ def log_terminal(
     tag_acquired: bool,
     current_command: str,
     gate_status: StartGateStatus | None,
+    pid_result: PIDResult | None,
 ) -> None:
     """Print one terminal diagnostic block."""
     print("Current State:", state)
     print("Reference Heading:", format_display(reference_heading_deg, " deg"))
     print("Current Heading:", format_display(current_heading_deg, " deg"))
     print("Heading Error:", format_display(heading_error_deg, " deg", signed=True))
-    pulse_duration_ms = pulse_duration_from_command(current_command)
-    if pulse_duration_ms is None:
-        print("Pulse Duration: None")
-    else:
-        print(f"Pulse Duration: {pulse_duration_ms} ms")
+    print("KP:", KP_HEADING)
+    print("KI:", KI_HEADING)
+    print("KD:", KD_HEADING)
+    print("P Term:", format_pid_value(pid_result, "p_term"))
+    print("I Term:", format_pid_value(pid_result, "i_term"))
+    print("D Term:", format_pid_value(pid_result, "d_term"))
+    print("PID Output:", format_pid_value(pid_result, "pid_output"))
+    print("Left Frequency:", format_pid_value(pid_result, "left_frequency_hz", " Hz"))
+    print("Right Frequency:", format_pid_value(pid_result, "right_frequency_hz", " Hz"))
     print("Tag Orientation:", format_display(measurement.orientation_deg, " deg", signed=True))
     print("Position Error:", format_display(measurement.position_error_x, " px", decimals=0, signed=True))
     print(
@@ -862,6 +1029,16 @@ def run_validation(args: argparse.Namespace) -> None:
         timeout=0.0,
     )
     logger = ContinuousNavigationLogger(Path(args.csv).expanduser().resolve())
+    heading_pid = HeadingPIDController(
+        kp=KP_HEADING,
+        ki=KI_HEADING,
+        kd=KD_HEADING,
+        max_integral=MAX_INTEGRAL,
+        max_correction=MAX_CORRECTION,
+        base_frequency_hz=BASE_FREQUENCY_HZ,
+        min_frequency_hz=MIN_FREQUENCY_HZ,
+        max_frequency_hz=MAX_FREQUENCY_HZ,
+    )
 
     state = "WAIT_FOR_TAG1"
     current_command = "NONE"
@@ -873,6 +1050,8 @@ def run_validation(args: argparse.Namespace) -> None:
     calibration_sent = False
     last_log_time = 0.0
     last_csv_time = 0.0
+    last_pid_update_time = 0.0
+    latest_pid_result: PIDResult | None = None
     start_time = time.monotonic()
     movement_start_time: float | None = None
     moving_started = False
@@ -906,7 +1085,7 @@ def run_validation(args: argparse.Namespace) -> None:
             now = time.monotonic()
             elapsed_time_sec = now - start_time
             heading_error_deg = (
-                wrap_angle_deg(current_heading_deg - reference_heading_deg)
+                wrap_angle_deg(reference_heading_deg - current_heading_deg)
                 if current_heading_deg is not None and reference_heading_deg is not None
                 else None
             )
@@ -921,6 +1100,7 @@ def run_validation(args: argparse.Namespace) -> None:
                     start_time,
                     movement_start_time,
                 )
+                moving_started = False
                 state = "STOPPED"
                 log_transition("STOPPED")
 
@@ -991,6 +1171,9 @@ def run_validation(args: argparse.Namespace) -> None:
                     log_transition("CAPTURE_REFERENCE_HEADING")
                     reference_heading_deg = current_heading_deg
                     heading_error_deg = 0.0
+                    heading_pid.reset()
+                    latest_pid_result = None
+                    last_pid_update_time = 0.0
                     print("## REFERENCE HEADING CAPTURED")
                     print(
                         "REFERENCE HEADING CAPTURED:",
@@ -1038,19 +1221,25 @@ def run_validation(args: argparse.Namespace) -> None:
                         print(f"Ignoring Current Tag: {measurement.tag_id}")
                         ignored_tag_id_logged = measurement.tag_id
 
-                    desired_command = command_for_heading_hold(
-                        heading_error_deg,
-                        args.heading_deadband,
-                    )
-                    current_command = send_if_changed(
-                        serial_controller,
-                        desired_command,
+                    (
                         current_command,
+                        latest_pid_result,
+                        last_pid_update_time,
+                    ) = update_pid_drive_command(
+                        serial_controller,
+                        heading_pid,
+                        reference_heading_deg,
+                        current_heading_deg,
+                        current_command,
+                        latest_pid_result,
+                        last_pid_update_time,
+                        now,
                         start_time,
                         movement_start_time,
-                        heading_error_deg,
                         measurement.orientation_deg,
                     )
+                    if latest_pid_result is not None:
+                        heading_error_deg = latest_pid_result.heading_error_deg
 
                 elif tag_visible:
                     if measurement.tag_id != active_tag_id:
@@ -1066,19 +1255,25 @@ def run_validation(args: argparse.Namespace) -> None:
                         log_transition("VISION_TRACKING")
 
                     last_visible_tag_id = measurement.tag_id
-                    desired_command = command_for_vision_tracking(
-                        measurement,
-                        args.vision_orientation_deadband,
-                    )
-                    current_command = send_if_changed(
-                        serial_controller,
-                        desired_command,
+                    (
                         current_command,
+                        latest_pid_result,
+                        last_pid_update_time,
+                    ) = update_pid_drive_command(
+                        serial_controller,
+                        heading_pid,
+                        reference_heading_deg,
+                        current_heading_deg,
+                        current_command,
+                        latest_pid_result,
+                        last_pid_update_time,
+                        now,
                         start_time,
                         movement_start_time,
-                        heading_error_deg,
                         measurement.orientation_deg,
                     )
+                    if latest_pid_result is not None:
+                        heading_error_deg = latest_pid_result.heading_error_deg
 
                     if not tag_acquired:
                         acquisition_status, acquisition_stable_since = evaluate_tag_acquisition(
@@ -1093,11 +1288,9 @@ def run_validation(args: argparse.Namespace) -> None:
                             and current_heading_deg is not None
                         ):
                             tag_acquired = True
-                            reference_heading_deg = current_heading_deg
-                            heading_error_deg = 0.0
                             print("TAG_ACQUIRED")
                             print(
-                                "NEW_REFERENCE_HEADING:",
+                                "REFERENCE_HEADING_RETAINED:",
                                 format_display(reference_heading_deg, " deg", signed=True),
                             )
                             log_transition("TAG_ACQUIRED")
@@ -1114,19 +1307,25 @@ def run_validation(args: argparse.Namespace) -> None:
                         state = "HEADING_HOLD"
                         log_transition("HEADING_HOLD")
 
-                    desired_command = command_for_heading_hold(
-                        heading_error_deg,
-                        args.heading_deadband,
-                    )
-                    current_command = send_if_changed(
-                        serial_controller,
-                        desired_command,
+                    (
                         current_command,
+                        latest_pid_result,
+                        last_pid_update_time,
+                    ) = update_pid_drive_command(
+                        serial_controller,
+                        heading_pid,
+                        reference_heading_deg,
+                        current_heading_deg,
+                        current_command,
+                        latest_pid_result,
+                        last_pid_update_time,
+                        now,
                         start_time,
                         movement_start_time,
-                        heading_error_deg,
                         measurement.orientation_deg,
                     )
+                    if latest_pid_result is not None:
+                        heading_error_deg = latest_pid_result.heading_error_deg
 
             if (now - last_csv_time) >= args.csv_interval:
                 logger.write(
@@ -1138,7 +1337,7 @@ def run_validation(args: argparse.Namespace) -> None:
                     heading_error_deg,
                     tag_visible,
                     tag_acquired,
-                    current_command,
+                    latest_pid_result,
                 )
                 last_csv_time = now
 
@@ -1153,6 +1352,7 @@ def run_validation(args: argparse.Namespace) -> None:
                     tag_acquired,
                     current_command,
                     gate_status,
+                    latest_pid_result,
                 )
                 last_log_time = now
 
@@ -1207,13 +1407,13 @@ def parse_args() -> argparse.Namespace:
         "--heading-deadband",
         type=float,
         default=1.0,
-        help="IMU heading-hold deadband in degrees.",
+        help="Compatibility option; PID heading deadband is HEADING_DEADBAND_DEG.",
     )
     parser.add_argument(
         "--vision-orientation-deadband",
         type=float,
         default=2.0,
-        help="AprilTag orientation deadband in degrees.",
+        help="Compatibility option; moving vision tracking now keeps PID heading hold.",
     )
     parser.add_argument(
         "--tag-acquisition-duration",
