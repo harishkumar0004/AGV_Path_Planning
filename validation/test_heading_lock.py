@@ -285,10 +285,10 @@ def command_for_heading_hold(heading_error_deg: float | None, deadband_deg: floa
         return "NONE"
 
     if heading_error_deg > deadband_deg:
-        return "RIGHT_PULSE 100"
+        return "RIGHT_PULSE 50"
 
     if heading_error_deg < -deadband_deg:
-        return "LEFT_PULSE 100"
+        return "LEFT_PULSE 50"
 
     return "STOP_CORRECTION"
 
@@ -314,10 +314,10 @@ def command_for_vision_tracking(
         return "NONE"
 
     if measurement.orientation_deg > orientation_deadband_deg:
-        return "LEFT_PULSE 100"
+        return "LEFT_PULSE 50"
 
     if measurement.orientation_deg < -orientation_deadband_deg:
-        return "RIGHT_PULSE 100"
+        return "RIGHT_PULSE 50"
 
     return "STOP_CORRECTION"
 
@@ -1150,7 +1150,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--heading-deadband",
         type=float,
-        default=2.0,
+        default=1.0,
         help="IMU heading-hold deadband in degrees.",
     )
     parser.add_argument(
