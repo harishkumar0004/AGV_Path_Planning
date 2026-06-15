@@ -129,6 +129,7 @@ class PIDDistanceLogger:
                     "reference_heading_deg",
                     "current_heading_deg",
                     "heading_error_deg",
+                    "navigation_authority",
                     "kp",
                     "ki",
                     "kd",
@@ -159,6 +160,7 @@ class PIDDistanceLogger:
         reference_heading_deg: float | None,
         current_heading_deg: float | None,
         heading_error_deg: float | None,
+        navigation_authority: str,
         pid_result: PIDResult | None,
     ) -> None:
         """
@@ -170,6 +172,7 @@ class PIDDistanceLogger:
             reference_heading_deg: Captured heading reference.
             current_heading_deg: Latest IMU heading.
             heading_error_deg: Current heading error.
+            navigation_authority: VISION when a tag controls steering, otherwise IMU.
             pid_result: Latest PID calculation.
         """
         with self.csv_path.open("a", newline="") as csv_file:
@@ -182,6 +185,7 @@ class PIDDistanceLogger:
                     format_csv(reference_heading_deg),
                     format_csv(current_heading_deg),
                     format_csv(heading_error_deg),
+                    navigation_authority,
                     format_csv(pid_result.kp if pid_result is not None else None),
                     format_csv(pid_result.ki if pid_result is not None else None),
                     format_csv(pid_result.kd if pid_result is not None else None),
@@ -225,6 +229,7 @@ class PIDDistanceLogger:
                     format_csv(summary.get("reference_heading_deg")),
                     format_csv(summary.get("final_current_heading_deg")),
                     format_csv(summary.get("final_heading_error_deg")),
+                    "",
                     "",
                     "",
                     "",
@@ -311,6 +316,7 @@ def draw_overlay(
     reference_heading_deg: float | None,
     current_heading_deg: float | None,
     heading_error_deg: float | None,
+    navigation_authority: str,
     pid_result: PIDResult | None,
     gate_status: StartGateStatus | None,
     current_command: str,
@@ -328,6 +334,7 @@ def draw_overlay(
         reference_heading_deg: Captured heading reference.
         current_heading_deg: Latest IMU heading.
         heading_error_deg: Current heading error.
+        navigation_authority: Current steering authority.
         pid_result: Latest PID result.
         gate_status: Current vision gate status.
         current_command: Last transmitted command.
@@ -378,6 +385,7 @@ def draw_overlay(
         ("Reference Heading", format_display(reference_heading_deg, " deg", signed=True)),
         ("Current Heading", format_display(current_heading_deg, " deg", signed=True)),
         ("Heading Error", format_display(heading_error_deg, " deg", signed=True)),
+        ("Authority", navigation_authority),
         ("P Term", format_display(pid_result.p_term if pid_result else None, signed=True)),
         ("I Term", format_display(pid_result.i_term if pid_result else None, signed=True)),
         ("D Term", format_display(pid_result.d_term if pid_result else None, signed=True)),
@@ -420,6 +428,7 @@ def log_terminal(
     reference_heading_deg: float | None,
     current_heading_deg: float | None,
     heading_error_deg: float | None,
+    navigation_authority: str,
     pid_result: PIDResult | None,
     current_command: str,
 ) -> None:
@@ -431,6 +440,7 @@ def log_terminal(
         reference_heading_deg: Captured heading reference.
         current_heading_deg: Latest IMU heading.
         heading_error_deg: Current heading error.
+        navigation_authority: Current steering authority.
         pid_result: Latest PID result.
         current_command: Last transmitted command.
     """
@@ -438,6 +448,7 @@ def log_terminal(
     print("Reference Heading:", format_display(reference_heading_deg, " deg", signed=True))
     print("Current Heading:", format_display(current_heading_deg, " deg", signed=True))
     print("Heading Error:", format_display(heading_error_deg, " deg", signed=True))
+    print("Navigation Authority:", navigation_authority)
     print("P Term:", format_display(pid_result.p_term if pid_result else None, signed=True))
     print("I Term:", format_display(pid_result.i_term if pid_result else None, signed=True))
     print("D Term:", format_display(pid_result.d_term if pid_result else None, signed=True))
@@ -664,6 +675,7 @@ def run_validation(args: argparse.Namespace) -> None:
     last_csv_time = 0.0
     start_time = time.monotonic()
     movement_start_time: float | None = None
+    navigation_authority = "NONE"
     summary_printed = False
     heading_error_samples: list[float] = []
     pid_output_samples: list[float] = []
@@ -820,30 +832,51 @@ def run_validation(args: argparse.Namespace) -> None:
                     )
                 elif (
                     navigation_reference_heading_deg is not None
-                    and current_heading_deg is not None
                     and (now - last_pid_update_time) >= PID_UPDATE_INTERVAL_SEC
                 ):
-                    latest_pid_result = pid_controller.update(
-                        navigation_reference_heading_deg,
-                        current_heading_deg,
-                        now,
-                    )
-                    heading_error_deg = latest_pid_result.heading_error_deg
-                    current_command = send_set_drive(
-                        serial_controller,
-                        latest_pid_result,
-                        start_time,
-                        movement_start_time,
-                    )
-                    heading_error_samples.append(latest_pid_result.heading_error_deg)
-                    pid_output_samples.append(latest_pid_result.pid_output)
-                    left_frequency_samples.append(latest_pid_result.left_frequency_hz)
-                    right_frequency_samples.append(latest_pid_result.right_frequency_hz)
-                    current_heading_samples.append(current_heading_deg)
-                    if movement_start_time is None:
-                        movement_start_time = now
-                        distance_estimate.last_update_time = now
-                    last_pid_update_time = now
+                    if measurement.orientation_deg is not None:
+                        selected_authority = "VISION"
+                        selected_error_deg = measurement.orientation_deg
+                    elif current_heading_deg is not None:
+                        selected_authority = "IMU"
+                        selected_error_deg = wrap_angle_deg(
+                            navigation_reference_heading_deg - current_heading_deg
+                        )
+                    else:
+                        selected_authority = "NONE"
+                        selected_error_deg = None
+
+                    if (
+                        selected_authority != "NONE"
+                        and selected_authority != navigation_authority
+                    ):
+                        navigation_authority = selected_authority
+                        pid_controller.reset()
+                        print("NAVIGATION AUTHORITY:", navigation_authority)
+
+                    if selected_error_deg is not None:
+                        latest_pid_result = pid_controller.update(
+                            selected_error_deg,
+                            0.0,
+                            now,
+                        )
+                        heading_error_deg = latest_pid_result.heading_error_deg
+                        current_command = send_set_drive(
+                            serial_controller,
+                            latest_pid_result,
+                            start_time,
+                            movement_start_time,
+                        )
+                        heading_error_samples.append(latest_pid_result.heading_error_deg)
+                        pid_output_samples.append(latest_pid_result.pid_output)
+                        left_frequency_samples.append(latest_pid_result.left_frequency_hz)
+                        right_frequency_samples.append(latest_pid_result.right_frequency_hz)
+                        if current_heading_deg is not None:
+                            current_heading_samples.append(current_heading_deg)
+                        if movement_start_time is None:
+                            movement_start_time = now
+                            distance_estimate.last_update_time = now
+                        last_pid_update_time = now
 
             elif state == "DISTANCE_COMPLETE" and not summary_printed:
                 summary_printed = finalize_run_summary(
@@ -868,6 +901,7 @@ def run_validation(args: argparse.Namespace) -> None:
                     navigation_reference_heading_deg,
                     current_heading_deg,
                     heading_error_deg,
+                    navigation_authority,
                     latest_pid_result,
                 )
                 last_csv_time = now
@@ -878,6 +912,7 @@ def run_validation(args: argparse.Namespace) -> None:
                     navigation_reference_heading_deg,
                     current_heading_deg,
                     heading_error_deg,
+                    navigation_authority,
                     latest_pid_result,
                     current_command,
                 )
@@ -894,6 +929,7 @@ def run_validation(args: argparse.Namespace) -> None:
                     navigation_reference_heading_deg,
                     current_heading_deg,
                     heading_error_deg,
+                    navigation_authority,
                     latest_pid_result,
                     gate_status,
                     current_command,
