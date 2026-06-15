@@ -18,6 +18,10 @@ public:
   void turnRight(uint32_t steps);
   void stop();
   void setFrequency(float frequency_hz);
+  void setMotorFrequencies(
+    float left_frequency_hz,
+    float right_frequency_hz
+  );
 
   bool isRunning() const;
   uint32_t getStepCount() const;

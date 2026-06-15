@@ -6,20 +6,20 @@
 #include "imu_manager.h"
 
 
-const uint8_t LEFT_STEP_PIN = 4;
-const uint8_t LEFT_DIR_PIN = 13;
-const uint8_t LEFT_ENABLE_PIN = 14;
+const uint8_t LEFT_STEP_PIN = 16;
+const uint8_t LEFT_DIR_PIN = 26;
+const uint8_t LEFT_ENABLE_PIN = 25;
 
-const uint8_t RIGHT_STEP_PIN = 16;
-const uint8_t RIGHT_DIR_PIN = 26;
-const uint8_t RIGHT_ENABLE_PIN = 25;
+const uint8_t RIGHT_STEP_PIN = 4;
+const uint8_t RIGHT_DIR_PIN = 13;
+const uint8_t RIGHT_ENABLE_PIN = 14;
 
 MotorConfig motor_config = {
   117.0,    // wheel_diameter_mm
   324.0,    // wheel_base_mm
-  40000,    // pulses_per_revolution: change only this for T60 pulse setting
-  40000.0,  // max_frequency_hz
-  10000.0   // max_acceleration_hz_per_sec
+  20000,    // pulses_per_revolution: change only this for T60 pulse setting
+  10000.0,  // max_frequency_hz
+  3000.0   // max_acceleration_hz_per_sec
 };
 
 StepGenerator left_motor(
@@ -44,7 +44,8 @@ SerialCommandHandler serial_handler(
   motion_controller,
   0,
   &drive,
-  &imu_manager
+  &imu_manager,
+  motor_config.max_acceleration_hz_per_sec
 );
 
 const uint32_t IMU_PRINT_INTERVAL_MS = 100;
@@ -56,7 +57,7 @@ void setup() {
   motion_controller.begin();
 
   Serial.println("ESP32 serial motion example started");
-  Serial.println("Commands: START_FORWARD, START_SLOW_FORWARD, STOP, TURN_LEFT, TURN_RIGHT, STATUS, CALIBRATE_IMU");
+  Serial.println("Commands: START_FORWARD, START_SLOW_FORWARD, SET_DRIVE left right, STOP, TURN_LEFT, TURN_RIGHT, STATUS, CALIBRATE_IMU");
   Serial.println("Validation pulses: LEFT_PULSE 100, RIGHT_PULSE 100");
   Serial.println("Continuous correction: START_LEFT_CORRECTION, START_RIGHT_CORRECTION, STOP_CORRECTION");
   Serial.println("Calibration: TURN_RIGHT 10, TURN_RIGHT 20, TURN_RIGHT 30, ...");
@@ -73,7 +74,10 @@ void setup() {
 void loop() {
   serial_handler.update();
 
-  if (!serial_handler.isValidationPulseActive()) {
+  if (
+    !serial_handler.isValidationPulseActive() &&
+    !serial_handler.isDirectDriveActive()
+  ) {
     motion_controller.update();
   }
 

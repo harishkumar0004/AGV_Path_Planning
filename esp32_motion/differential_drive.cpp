@@ -15,6 +15,7 @@ void DifferentialDrive::begin() {
 }
 
 
+
 void DifferentialDrive::enable() {
   _left_motor.enable();
   _right_motor.enable();
@@ -56,6 +57,28 @@ void DifferentialDrive::stop() {
 void DifferentialDrive::setFrequency(float frequency_hz) {
   _left_motor.setFrequency(frequency_hz);
   _right_motor.setFrequency(frequency_hz);
+}
+
+
+void DifferentialDrive::setMotorFrequencies(
+  float left_frequency_hz,
+  float right_frequency_hz
+) {
+  _left_motor.setDirection(true);
+  _right_motor.setDirection(true);
+
+  _left_motor.setFrequency(left_frequency_hz);
+  _right_motor.setFrequency(right_frequency_hz);
+
+  enable();
+
+  if (!_left_motor.isRunning()) {
+    _left_motor.start(0);
+  }
+
+  if (!_right_motor.isRunning()) {
+    _right_motor.start(0);
+  }
 }
 
 
