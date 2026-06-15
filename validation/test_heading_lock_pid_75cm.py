@@ -524,6 +524,7 @@ def draw_overlay(
     frame,
     detection: dict | None,
     measurement: PerceptionState,
+    startup_phase: str,
     state: str,
     distance_travelled_cm: float,
     target_distance_cm: float,
@@ -546,6 +547,7 @@ def draw_overlay(
         frame: Latest camera frame.
         detection: First visible AprilTag detection.
         measurement: Current AprilTag measurement.
+        startup_phase: STARTUP before motion begins, otherwise RUNTIME.
         state: Current validation state.
         distance_travelled_cm: Estimated distance.
         target_distance_cm: Stop distance.
@@ -616,6 +618,7 @@ def draw_overlay(
         right_frequency = f"{pid_result.right_frequency_hz:.0f} Hz"
 
     lines = [
+        ("Startup Phase", startup_phase),
         ("State", state),
         ("Distance", f"{distance_travelled_cm:.1f} / {target_distance_cm:.1f} cm"),
         ("Reference Heading", format_display(reference_heading_deg, " deg", signed=True)),
@@ -665,6 +668,7 @@ def draw_overlay(
 
 
 def log_terminal(
+    startup_phase: str,
     distance_travelled_cm: float,
     reference_heading_deg: float | None,
     current_heading_deg: float | None,
@@ -682,6 +686,7 @@ def log_terminal(
     Print PID heading-control diagnostics to the terminal.
 
     Args:
+        startup_phase: STARTUP before motion begins, otherwise RUNTIME.
         distance_travelled_cm: Estimated travel distance.
         reference_heading_deg: Captured heading reference.
         current_heading_deg: Latest IMU heading.
@@ -695,6 +700,7 @@ def log_terminal(
         pid_result: Latest PID result.
         current_command: Last transmitted command.
     """
+    print("startup_phase:", startup_phase)
     print("Distance Travelled:", f"{distance_travelled_cm:.2f} cm")
     print("Reference Heading:", format_display(reference_heading_deg, " deg", signed=True))
     print("Current Heading:", format_display(current_heading_deg, " deg", signed=True))
@@ -1071,6 +1077,7 @@ def run_validation(args: argparse.Namespace) -> None:
             )
 
             key = cv2.waitKey(1) & 0xFF
+            startup_phase = "RUNTIME" if movement_start_time is not None else "STARTUP"
             if key in (ord("s"), ord("S")):
                 current_command = "STOP"
                 transmit_command(serial_controller, current_command, start_time, movement_start_time)
@@ -1147,6 +1154,9 @@ def run_validation(args: argparse.Namespace) -> None:
                     latest_pid_result = None
                     last_pid_update_time = 0.0
                     movement_start_time = None
+                    vision_lost_count = 0
+                    last_vision_error_deg = None
+                    navigation_authority = "NONE"
                     print(
                         "NAVIGATION REFERENCE HEADING CAPTURED:",
                         format_display(
@@ -1185,8 +1195,19 @@ def run_validation(args: argparse.Namespace) -> None:
                 tag_has_valid_orientation = (
                     tag_visible and measurement.orientation_deg is not None
                 )
+                runtime_vision_persistence_enabled = movement_start_time is not None
 
-                if tag_has_valid_orientation:
+                if not runtime_vision_persistence_enabled:
+                    vision_lost_count = 0
+                    last_vision_error_deg = None
+                    if (
+                        navigation_reference_heading_deg is not None
+                        and current_heading_deg is not None
+                    ):
+                        selected_authority = "IMU"
+                    else:
+                        selected_authority = "NONE"
+                elif tag_has_valid_orientation:
                     vision_lost_count = 0
                     last_vision_error_deg = measurement.orientation_deg
                     selected_authority = "VISION"
@@ -1326,6 +1347,8 @@ def run_validation(args: argparse.Namespace) -> None:
                     summary_printed,
                 )
 
+            startup_phase = "RUNTIME" if movement_start_time is not None else "STARTUP"
+
             if (now - last_csv_time) >= args.csv_interval:
                 logger.write(
                     elapsed_time_sec,
@@ -1347,6 +1370,7 @@ def run_validation(args: argparse.Namespace) -> None:
 
             if (now - last_log_time) >= args.log_interval:
                 log_terminal(
+                    startup_phase,
                     distance_estimate.travelled_cm,
                     navigation_reference_heading_deg,
                     current_heading_deg,
@@ -1367,6 +1391,7 @@ def run_validation(args: argparse.Namespace) -> None:
                     frame,
                     detection,
                     measurement,
+                    startup_phase,
                     state,
                     distance_estimate.travelled_cm,
                     args.travel_distance_cm,
