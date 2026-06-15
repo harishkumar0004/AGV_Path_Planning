@@ -32,6 +32,8 @@ class ImuSerialReader:
         self.latest_heading_deg: float | None = None
         self.latest_status: str = "DISCONNECTED"
         self.last_heading_time: float | None = None
+        self.last_message: str = ""
+        self.heading_message_count = 0
 
     def connect(self) -> bool:
         """
@@ -163,6 +165,8 @@ class ImuSerialReader:
         if not line:
             return False
 
+        self.last_message = line
+
         if line in {"BOOT", "IMU_CALIBRATING", "IMU_READY", "IMU_ERROR"}:
             self.latest_status = line
             return False
@@ -175,6 +179,7 @@ class ImuSerialReader:
         try:
             self.latest_heading_deg = float(value_text)
             self.last_heading_time = time.monotonic()
+            self.heading_message_count += 1
             self.latest_status = "CONNECTED"
             return True
         except ValueError:

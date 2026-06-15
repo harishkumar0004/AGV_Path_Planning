@@ -41,7 +41,7 @@ except ModuleNotFoundError as error:
 
 
 KP_HEADING = 100.0
-KI_HEADING = 0.0
+KI_HEADING = 5.0
 KD_HEADING = 0.0
 
 HEADING_DEADBAND_DEG = 0.2
@@ -54,7 +54,7 @@ MAX_FREQUENCY_HZ = 10000.0
 PID_UPDATE_INTERVAL_SEC = 0.05
 VISION_LOST_FRAME_THRESHOLD = 5
 
-DEFAULT_TRAVEL_DISTANCE_CM = 75.0
+DEFAULT_TRAVEL_DISTANCE_CM = 150.0
 DEFAULT_WHEEL_DIAMETER_MM = 117.0
 DEFAULT_PULSES_PER_REVOLUTION = 20000
 
@@ -630,14 +630,14 @@ def draw_overlay(
         ("Detection Time", f"{detection_time_ms:.1f} ms"),
         ("Tag Visible", "YES" if tag_visible else "NO"),
         ("Tag ID", str(measurement.tag_id) if measurement.tag_id is not None else "None"),
+        ("Tag Orientation", format_display(measurement.orientation_deg, " deg", signed=True)),
+        ("Position Error X", format_display(measurement.position_error_x, " px", decimals=0, signed=True)),
         ("P Term", format_display(pid_result.p_term if pid_result else None, signed=True)),
         ("I Term", format_display(pid_result.i_term if pid_result else None, signed=True)),
         ("D Term", format_display(pid_result.d_term if pid_result else None, signed=True)),
         ("PID Output", pid_text),
         ("Left Frequency", left_frequency),
         ("Right Frequency", right_frequency),
-        ("Tag Orientation", format_display(measurement.orientation_deg, " deg", signed=True)),
-        ("Position Error X", format_display(measurement.position_error_x, " px", decimals=0, signed=True)),
         ("Vision Gate", gate_status.status_text if gate_status else "None"),
         ("Command", current_command),
     ]
@@ -836,6 +836,11 @@ def log_startup_diagnostics(
     measurement: PerceptionState,
     gate_status: StartGateStatus | None,
     imu_status: str,
+    imu_ready_received: bool,
+    current_heading_deg: float | None,
+    reference_heading_deg: float | None,
+    last_imu_message: str,
+    heading_message_count: int,
     startup_tag1_orientation_deg: float | None,
 ) -> None:
     """
@@ -850,14 +855,24 @@ def log_startup_diagnostics(
         measurement: Latest perception state.
         gate_status: Latest vision gate status.
         imu_status: Latest IMU reader status.
+        imu_ready_received: True after IMU_READY was observed.
+        current_heading_deg: Latest parsed heading.
+        reference_heading_deg: Captured navigation reference.
+        last_imu_message: Last raw serial message parsed by the IMU reader.
+        heading_message_count: Number of HEADING messages parsed.
         startup_tag1_orientation_deg: Tag1 orientation captured at gate pass.
     """
     print("startup_state:", state)
     print("startup_lock_count:", startup_lock_count)
+    print("imu_ready_received:", imu_ready_received)
+    print("current_heading_deg:", format_display(current_heading_deg, " deg", signed=True))
+    print("reference_heading_deg:", format_display(reference_heading_deg, " deg", signed=True))
     print("calibration_complete:", calibration_complete)
     print("navigation_authority:", navigation_authority)
     print("reason_startup_waiting:", reason_startup_waiting)
     print("imu_status:", imu_status)
+    print("last_imu_message:", last_imu_message or "None")
+    print("heading_message_count:", heading_message_count)
     print("tag_visible:", "YES" if measurement.tag_visible else "NO")
     print("tag_id:", measurement.tag_id if measurement.tag_id is not None else "None")
     print("tag_orientation:", format_display(measurement.orientation_deg, " deg", signed=True))
@@ -1223,6 +1238,11 @@ def run_validation(args: argparse.Namespace) -> None:
                     measurement,
                     gate_status,
                     imu_reader.latest_status,
+                    imu_ready_received,
+                    current_heading_deg,
+                    navigation_reference_heading_deg,
+                    getattr(imu_reader, "last_message", ""),
+                    getattr(imu_reader, "heading_message_count", 0),
                     startup_tag1_orientation_deg,
                 )
                 last_startup_diagnostics_time = now
@@ -1513,6 +1533,7 @@ def run_validation(args: argparse.Namespace) -> None:
                     measurement.detection_time_ms,
                     tag_visible,
                     measurement.tag_id,
+                    # Same orientation value shown on the OpenCV overlay.
                     measurement.orientation_deg,
                     measurement.position_error_x,
                     latest_pid_result,
