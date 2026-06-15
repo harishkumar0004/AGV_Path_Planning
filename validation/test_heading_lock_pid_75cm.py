@@ -283,6 +283,68 @@ class PIDDistanceLogger:
                 ]
             )
 
+    def write_event(
+        self,
+        event_name: str,
+        timestamp_sec: float,
+        distance_travelled_cm: float,
+        tag_id: int | None,
+        tag_orientation_deg: float | None,
+        position_error_px: float | None,
+        navigation_authority: str,
+    ) -> None:
+        """
+        Append a one-time navigation event row.
+
+        Args:
+            event_name: Event label.
+            timestamp_sec: Time since program start.
+            distance_travelled_cm: Estimated distance travelled.
+            tag_id: Visible tag ID, when available.
+            tag_orientation_deg: Visible tag orientation, when available.
+            position_error_px: Visible tag position error, when available.
+            navigation_authority: Current navigation authority.
+        """
+        with self.csv_path.open("a", newline="") as csv_file:
+            writer = csv.writer(csv_file)
+            writer.writerow(
+                [
+                    event_name,
+                    format_csv(timestamp_sec),
+                    format_csv(distance_travelled_cm),
+                    "",
+                    "",
+                    "",
+                    navigation_authority,
+                    "",
+                    "",
+                    "YES" if tag_id is not None else "NO",
+                    tag_id if tag_id is not None else "",
+                    format_csv(tag_orientation_deg),
+                    format_csv(position_error_px),
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                ]
+            )
+
 
 def create_pid_controller() -> HeadingPIDController:
     """
@@ -671,6 +733,45 @@ def finalize_run_summary(
     print_run_summary(summary)
     logger.write_summary(summary)
     return True
+
+
+def log_navigation_event(
+    logger: PIDDistanceLogger,
+    event_name: str,
+    tag_id: int | None,
+    distance_cm: float,
+    timestamp_sec: float,
+    tag_orientation_deg: float | None,
+    position_error_px: float | None,
+    navigation_authority: str,
+) -> None:
+    """
+    Print and write a one-time navigation event.
+
+    Args:
+        logger: CSV logger.
+        event_name: Event label.
+        tag_id: Visible tag ID.
+        distance_cm: Estimated distance travelled.
+        timestamp_sec: Time since program start.
+        tag_orientation_deg: Tag orientation, when available.
+        position_error_px: Tag position error, when available.
+        navigation_authority: Current navigation authority.
+    """
+    print(event_name)
+    print("tag_id:", tag_id if tag_id is not None else "None")
+    print("distance_cm:", f"{distance_cm:.2f}")
+    print("timestamp:", f"{timestamp_sec:.2f}")
+    print()
+    logger.write_event(
+        event_name,
+        timestamp_sec,
+        distance_cm,
+        tag_id,
+        tag_orientation_deg,
+        position_error_px,
+        navigation_authority,
+    )
     print("Target Distance:", f"{summary['target_distance_cm']:.2f} cm")
     print("Actual Distance:", f"{summary['actual_distance_cm']:.2f} cm")
     print()
@@ -729,6 +830,8 @@ def run_validation(args: argparse.Namespace) -> None:
     start_time = time.monotonic()
     movement_start_time: float | None = None
     navigation_authority = "NONE"
+    last_logged_tag_id: int | None = None
+    vision_authority_tag_id: int | None = None
     summary_printed = False
     heading_error_samples: list[float] = []
     pid_output_samples: list[float] = []
@@ -867,6 +970,71 @@ def run_validation(args: argparse.Namespace) -> None:
                     args.pulses_per_revolution,
                 )
 
+                if tag_visible and measurement.tag_id != last_logged_tag_id:
+                    log_navigation_event(
+                        logger,
+                        "TAG_DETECTED",
+                        measurement.tag_id,
+                        distance_estimate.travelled_cm,
+                        elapsed_time_sec,
+                        measurement.orientation_deg,
+                        measurement.position_error_x,
+                        navigation_authority,
+                    )
+                    last_logged_tag_id = measurement.tag_id
+
+                if not tag_visible:
+                    last_logged_tag_id = None
+
+                tag_has_valid_orientation = (
+                    tag_visible and measurement.orientation_deg is not None
+                )
+
+                if tag_has_valid_orientation:
+                    selected_authority = "VISION"
+                elif (
+                    navigation_reference_heading_deg is not None
+                    and current_heading_deg is not None
+                ):
+                    selected_authority = "IMU"
+                else:
+                    selected_authority = "NONE"
+
+                if selected_authority != navigation_authority:
+                    if selected_authority == "VISION":
+                        log_navigation_event(
+                            logger,
+                            "VISION_AUTHORITY_ENTERED",
+                            measurement.tag_id,
+                            distance_estimate.travelled_cm,
+                            elapsed_time_sec,
+                            measurement.orientation_deg,
+                            measurement.position_error_x,
+                            selected_authority,
+                        )
+                        vision_authority_tag_id = measurement.tag_id
+
+                    if (
+                        navigation_authority == "VISION"
+                        and selected_authority != "VISION"
+                    ):
+                        log_navigation_event(
+                            logger,
+                            "VISION_AUTHORITY_EXITED",
+                            vision_authority_tag_id,
+                            distance_estimate.travelled_cm,
+                            elapsed_time_sec,
+                            measurement.orientation_deg,
+                            measurement.position_error_x,
+                            navigation_authority,
+                        )
+                        vision_authority_tag_id = None
+
+                    navigation_authority = selected_authority
+                    if navigation_authority != "NONE":
+                        pid_controller.reset()
+                    print("NAVIGATION AUTHORITY:", navigation_authority)
+
                 if distance_estimate.travelled_cm >= args.travel_distance_cm:
                     current_command = "STOP"
                     transmit_command(serial_controller, current_command, start_time, movement_start_time)
@@ -891,25 +1059,17 @@ def run_validation(args: argparse.Namespace) -> None:
                     navigation_reference_heading_deg is not None
                     and (now - last_pid_update_time) >= PID_UPDATE_INTERVAL_SEC
                 ):
-                    if measurement.orientation_deg is not None:
-                        selected_authority = "VISION"
+                    if navigation_authority == "VISION":
                         selected_error_deg = measurement.orientation_deg
-                    elif current_heading_deg is not None:
-                        selected_authority = "IMU"
+                    elif (
+                        navigation_authority == "IMU"
+                        and current_heading_deg is not None
+                    ):
                         selected_error_deg = wrap_angle_deg(
                             navigation_reference_heading_deg - current_heading_deg
                         )
                     else:
-                        selected_authority = "NONE"
                         selected_error_deg = None
-
-                    if (
-                        selected_authority != "NONE"
-                        and selected_authority != navigation_authority
-                    ):
-                        navigation_authority = selected_authority
-                        pid_controller.reset()
-                        print("NAVIGATION AUTHORITY:", navigation_authority)
 
                     if selected_error_deg is not None:
                         latest_pid_result = pid_controller.update(
