@@ -435,7 +435,7 @@ def run_validation(args: argparse.Namespace) -> None:
     current_command = "NONE"
     gate_status: StartGateStatus | None = None
     gate_stable_since: float | None = None
-    reference_heading_deg: float | None = None
+    navigation_reference_heading_deg: float | None = None
     latest_pid_result: PIDResult | None = None
     last_pid_update_time = 0.0
     last_log_time = 0.0
@@ -471,8 +471,11 @@ def run_validation(args: argparse.Namespace) -> None:
             now = time.monotonic()
             elapsed_time_sec = now - start_time
             heading_error_deg = (
-                wrap_angle_deg(reference_heading_deg - current_heading_deg)
-                if reference_heading_deg is not None and current_heading_deg is not None
+                wrap_angle_deg(navigation_reference_heading_deg - current_heading_deg)
+                if (
+                    navigation_reference_heading_deg is not None
+                    and current_heading_deg is not None
+                )
                 else None
             )
 
@@ -525,14 +528,14 @@ def run_validation(args: argparse.Namespace) -> None:
                     transmit_command(serial_controller, current_command, start_time, movement_start_time)
                     imu_reader.latest_heading_deg = None
                     imu_reader.latest_status = "IMU_CALIBRATING"
-                    reference_heading_deg = None
+                    navigation_reference_heading_deg = None
                     state = "CALIBRATE_IMU"
                     print("STATE TRANSITION >>> CALIBRATE_IMU")
 
             elif state == "CALIBRATE_IMU":
                 if current_heading_deg is not None:
                     print("IMU_READY RECEIVED")
-                    reference_heading_deg = current_heading_deg
+                    navigation_reference_heading_deg = current_heading_deg
                     heading_error_deg = 0.0
                     pid_controller.reset()
                     distance_estimate.reset()
@@ -540,8 +543,12 @@ def run_validation(args: argparse.Namespace) -> None:
                     last_pid_update_time = 0.0
                     movement_start_time = None
                     print(
-                        "REFERENCE HEADING CAPTURED:",
-                        format_display(reference_heading_deg, " deg", signed=True),
+                        "NAVIGATION REFERENCE HEADING CAPTURED:",
+                        format_display(
+                            navigation_reference_heading_deg,
+                            " deg",
+                            signed=True,
+                        ),
                     )
                     state = "HEADING_HOLD_75CM"
                     print("STATE TRANSITION >>> HEADING_HOLD_75CM")
@@ -561,12 +568,12 @@ def run_validation(args: argparse.Namespace) -> None:
                     print("TRAVEL DISTANCE COMPLETE")
                     print("STATE TRANSITION >>> DISTANCE_COMPLETE")
                 elif (
-                    reference_heading_deg is not None
+                    navigation_reference_heading_deg is not None
                     and current_heading_deg is not None
                     and (now - last_pid_update_time) >= PID_UPDATE_INTERVAL_SEC
                 ):
                     latest_pid_result = pid_controller.update(
-                        reference_heading_deg,
+                        navigation_reference_heading_deg,
                         current_heading_deg,
                         now,
                     )
@@ -599,7 +606,7 @@ def run_validation(args: argparse.Namespace) -> None:
                 logger.write(
                     elapsed_time_sec,
                     distance_estimate.travelled_cm,
-                    reference_heading_deg,
+                    navigation_reference_heading_deg,
                     current_heading_deg,
                     heading_error_deg,
                     latest_pid_result,
@@ -609,7 +616,7 @@ def run_validation(args: argparse.Namespace) -> None:
             if (now - last_log_time) >= args.log_interval:
                 log_terminal(
                     distance_estimate.travelled_cm,
-                    reference_heading_deg,
+                    navigation_reference_heading_deg,
                     current_heading_deg,
                     heading_error_deg,
                     latest_pid_result,
@@ -625,7 +632,7 @@ def run_validation(args: argparse.Namespace) -> None:
                     state,
                     distance_estimate.travelled_cm,
                     args.travel_distance_cm,
-                    reference_heading_deg,
+                    navigation_reference_heading_deg,
                     current_heading_deg,
                     heading_error_deg,
                     latest_pid_result,
