@@ -606,11 +606,11 @@ def print_processing_startup_summary(
         return
 
     frame_height, frame_width = frame.shape[:2]
-    diagnostics = perception_manager.camera_manager.diagnostics
+    diagnostics = getattr(perception_manager.camera_manager, "diagnostics", None)
 
-    configured_resolution = "Unknown"
+    configured_resolution = f"{frame_width}x{frame_height}"
     target_fps = 0.0
-    pixel_format = "Unknown"
+    pixel_format = str(frame.dtype)
     if diagnostics is not None:
         configured_resolution = (
             f"{diagnostics.configured_width}x{diagnostics.configured_height}"
