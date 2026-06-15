@@ -762,6 +762,116 @@ def print_processing_startup_summary(
     print()
 
 
+def get_startup_wait_reason(
+    state: str,
+    measurement: PerceptionState,
+    gate_status: StartGateStatus | None,
+    current_heading_deg: float | None,
+    imu_status: str,
+    imu_ready_received: bool,
+    movement_start_time: float | None,
+    orientation_tolerance: float,
+) -> str:
+    """
+    Explain which startup condition is currently blocking motion.
+
+    Args:
+        state: Current startup/navigation state.
+        measurement: Latest perception state.
+        gate_status: Latest vision gate status.
+        current_heading_deg: Latest IMU heading.
+        imu_status: Latest IMU reader status text.
+        imu_ready_received: True after IMU_READY was observed.
+        movement_start_time: Set after first drive command.
+        orientation_tolerance: Required Tag1 orientation tolerance.
+
+    Returns:
+        Human-readable startup wait reason.
+    """
+    if movement_start_time is not None:
+        return "Runtime active"
+
+    if state == "WAIT_FOR_TAG1":
+        if measurement.tag_id != 1:
+            return "Waiting for Tag1"
+        return "Tag1 detected, waiting for ALIGN_TAG1 transition"
+
+    if state == "ALIGN_TAG1":
+        if measurement.orientation_deg is None:
+            return "Waiting for valid Tag1 orientation"
+        if abs(measurement.orientation_deg) > orientation_tolerance:
+            return "Waiting for Tag1 orientation alignment"
+        return "Tag1 aligned, waiting for vision gate transition"
+
+    if state == "VISION_START_GATE":
+        if gate_status is None:
+            return "Waiting for first vision gate evaluation"
+        if not gate_status.orientation_pass:
+            return "Vision gate waiting: orientation not stable"
+        if not gate_status.position_pass:
+            return "Vision gate waiting: position not centered"
+        if gate_status.status_text != "READY_TO_MOVE":
+            return "Vision gate waiting for 0.5 s stable lock"
+        return "Vision gate ready, waiting to send CALIBRATE_IMU"
+
+    if state == "CALIBRATE_IMU":
+        if not imu_ready_received:
+            return f"Waiting for IMU_READY, status={imu_status}"
+        if current_heading_deg is None:
+            return "IMU_READY received, waiting for HEADING value"
+        return "Calibration complete, waiting for heading capture transition"
+
+    if state == "HEADING_HOLD_75CM":
+        return "Heading reference captured, waiting for first SET_DRIVE"
+
+    return "No startup wait"
+
+
+def log_startup_diagnostics(
+    state: str,
+    startup_lock_count: int,
+    calibration_complete: bool,
+    navigation_authority: str,
+    reason_startup_waiting: str,
+    measurement: PerceptionState,
+    gate_status: StartGateStatus | None,
+    imu_status: str,
+    startup_tag1_orientation_deg: float | None,
+) -> None:
+    """
+    Print one startup diagnostic block.
+
+    Args:
+        state: Current startup/navigation state.
+        startup_lock_count: Number of one-second startup diagnostic samples.
+        calibration_complete: True when IMU_READY and heading are available.
+        navigation_authority: Current navigation authority.
+        reason_startup_waiting: Human-readable wait reason.
+        measurement: Latest perception state.
+        gate_status: Latest vision gate status.
+        imu_status: Latest IMU reader status.
+        startup_tag1_orientation_deg: Tag1 orientation captured at gate pass.
+    """
+    print("startup_state:", state)
+    print("startup_lock_count:", startup_lock_count)
+    print("calibration_complete:", calibration_complete)
+    print("navigation_authority:", navigation_authority)
+    print("reason_startup_waiting:", reason_startup_waiting)
+    print("imu_status:", imu_status)
+    print("tag_visible:", "YES" if measurement.tag_visible else "NO")
+    print("tag_id:", measurement.tag_id if measurement.tag_id is not None else "None")
+    print("tag_orientation:", format_display(measurement.orientation_deg, " deg", signed=True))
+    print(
+        "startup_tag1_orientation:",
+        format_display(startup_tag1_orientation_deg, " deg", signed=True),
+    )
+    print("position_error:", format_display(measurement.position_error_x, " px", decimals=0, signed=True))
+    if gate_status is not None:
+        print("vision_gate_status:", gate_status.status_text)
+        print("vision_gate_stable_time:", f"{gate_status.stable_time_sec:.2f} s")
+    print()
+
+
 def calculate_run_summary(
     heading_error_samples: list[float],
     pid_output_samples: list[float],
@@ -1014,16 +1124,20 @@ def run_validation(args: argparse.Namespace) -> None:
     latest_pid_result: PIDResult | None = None
     last_pid_update_time = 0.0
     last_log_time = 0.0
+    last_startup_diagnostics_time = 0.0
     last_csv_time = 0.0
     start_time = time.monotonic()
     movement_start_time: float | None = None
     navigation_authority = "NONE"
     vision_lost_count = 0
     last_vision_error_deg: float | None = None
+    startup_tag1_orientation_deg: float | None = None
     last_logged_tag_id: int | None = None
     vision_authority_tag_id: int | None = None
     summary_printed = False
     processing_summary_printed = False
+    startup_lock_count = 0
+    imu_ready_received = False
     heading_error_samples: list[float] = []
     pid_output_samples: list[float] = []
     left_frequency_samples: list[float] = []
@@ -1063,6 +1177,8 @@ def run_validation(args: argparse.Namespace) -> None:
                 processing_summary_printed = True
 
             imu_reader.update_from_connection(serial_controller.serial_connection)
+            if imu_reader.latest_status == "IMU_READY":
+                imu_ready_received = True
             current_heading_deg = imu_reader.get_heading()
 
             now = time.monotonic()
@@ -1078,6 +1194,39 @@ def run_validation(args: argparse.Namespace) -> None:
 
             key = cv2.waitKey(1) & 0xFF
             startup_phase = "RUNTIME" if movement_start_time is not None else "STARTUP"
+            calibration_complete = (
+                imu_ready_received and current_heading_deg is not None
+            )
+
+            if (
+                startup_phase == "STARTUP"
+                and state not in {"STOPPED", "DISTANCE_COMPLETE"}
+                and now - last_startup_diagnostics_time >= 1.0
+            ):
+                startup_lock_count += 1
+                reason_startup_waiting = get_startup_wait_reason(
+                    state,
+                    measurement,
+                    gate_status,
+                    current_heading_deg,
+                    imu_reader.latest_status,
+                    imu_ready_received,
+                    movement_start_time,
+                    args.orientation_tolerance,
+                )
+                log_startup_diagnostics(
+                    state,
+                    startup_lock_count,
+                    calibration_complete,
+                    navigation_authority,
+                    reason_startup_waiting,
+                    measurement,
+                    gate_status,
+                    imu_reader.latest_status,
+                    startup_tag1_orientation_deg,
+                )
+                last_startup_diagnostics_time = now
+
             if key in (ord("s"), ord("S")):
                 current_command = "STOP"
                 transmit_command(serial_controller, current_command, start_time, movement_start_time)
@@ -1136,16 +1285,18 @@ def run_validation(args: argparse.Namespace) -> None:
 
                 if gate_status.status_text == "READY_TO_MOVE":
                     print("VISION START GATE PASSED")
+                    startup_tag1_orientation_deg = measurement.orientation_deg
                     current_command = "CALIBRATE_IMU"
                     transmit_command(serial_controller, current_command, start_time, movement_start_time)
                     imu_reader.latest_heading_deg = None
                     imu_reader.latest_status = "IMU_CALIBRATING"
+                    imu_ready_received = False
                     navigation_reference_heading_deg = None
                     state = "CALIBRATE_IMU"
                     print("STATE TRANSITION >>> CALIBRATE_IMU")
 
             elif state == "CALIBRATE_IMU":
-                if current_heading_deg is not None:
+                if calibration_complete:
                     print("IMU_READY RECEIVED")
                     navigation_reference_heading_deg = current_heading_deg
                     heading_error_deg = 0.0
