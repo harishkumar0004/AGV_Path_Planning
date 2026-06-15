@@ -19,12 +19,11 @@ try:
     from communication.imu_serial_reader import ImuSerialReader
     from communication.serial_motor_controller import SerialMotorController
     from core.application_state import ApplicationState
+    from core.perception_state import PerceptionState
     from perception.perception_manager import PerceptionManager
-    from validation.performance_monitor import PerformanceMonitor
     from validation.test_heading_lock import (
         PIDResult,
         StartGateStatus,
-        TagMeasurement,
         HeadingPIDController,
         choose_initial_orientation_state,
         command_for_alignment_state,
@@ -33,7 +32,6 @@ try:
         format_display,
         format_set_drive_command,
         get_orientation_color,
-        measure_tag,
         transmit_command,
         wrap_angle_deg,
     )
@@ -184,7 +182,7 @@ class PIDDistanceLogger:
             current_heading_deg: Latest IMU heading.
             heading_error_deg: Current heading error.
             navigation_authority: VISION when a tag controls steering, otherwise IMU.
-            fps: Camera FPS from PerformanceMonitor.
+            fps: Camera FPS from PerceptionManager.
             detection_time_ms: Latest detection update time.
             tag_visible: True when a tag is visible.
             tag_id: Latest visible tag ID.
@@ -401,7 +399,7 @@ def send_set_drive(
 def draw_overlay(
     frame,
     detection: dict | None,
-    measurement: TagMeasurement,
+    measurement: PerceptionState,
     state: str,
     distance_travelled_cm: float,
     target_distance_cm: float,
@@ -430,7 +428,7 @@ def draw_overlay(
         current_heading_deg: Latest IMU heading.
         heading_error_deg: Current heading error.
         navigation_authority: Current steering authority.
-        fps: Camera FPS from PerformanceMonitor.
+        fps: Camera FPS from PerceptionManager.
         detection_time_ms: Latest detection update time.
         tag_visible: True when a tag is visible.
         pid_result: Latest PID result.
@@ -561,7 +559,7 @@ def log_terminal(
         current_heading_deg: Latest IMU heading.
         heading_error_deg: Current heading error.
         navigation_authority: Current steering authority.
-        fps: Camera FPS from PerformanceMonitor.
+        fps: Camera FPS from PerceptionManager.
         detection_time_ms: Latest detection update time.
         tag_visible: True when a tag is visible.
         tag_id: Latest visible tag ID.
@@ -870,7 +868,6 @@ def run_validation(args: argparse.Namespace) -> None:
     )
     pid_controller = create_pid_controller()
     distance_estimate = DistanceEstimate()
-    monitor = PerformanceMonitor()
     logger = PIDDistanceLogger(Path(args.csv).expanduser().resolve())
 
     state = "WAIT_FOR_TAG1"
@@ -909,25 +906,22 @@ def run_validation(args: argparse.Namespace) -> None:
 
     try:
         while True:
-            detections = monitor.measure_detection_cycle(perception_manager.update)
-            monitor.record_camera_frame()
+            measurement = perception_manager.update_state()
             frame = perception_manager.last_frame
+            detections = perception_manager.get_detections()
             detection = detections[0] if detections else None
-            measurement = measure_tag(frame, detection)
-            tag_visible = measurement.tag_id is not None
-            monitor.record_tag_detection(measurement.tag_id)
-            metrics = monitor.metrics
+            tag_visible = measurement.tag_visible
 
             if (
                 not processing_summary_printed
                 and frame is not None
-                and metrics.camera_fps > 0.0
+                and measurement.fps > 0.0
             ):
                 print_processing_startup_summary(
                     perception_manager,
                     frame,
-                    metrics.camera_fps,
-                    metrics.detection_time_ms,
+                    measurement.fps,
+                    measurement.detection_time_ms,
                 )
                 processing_summary_printed = True
 
@@ -1190,8 +1184,8 @@ def run_validation(args: argparse.Namespace) -> None:
                     current_heading_deg,
                     heading_error_deg,
                     navigation_authority,
-                    metrics.camera_fps,
-                    metrics.detection_time_ms,
+                    measurement.fps,
+                    measurement.detection_time_ms,
                     tag_visible,
                     measurement.tag_id,
                     measurement.orientation_deg,
@@ -1207,8 +1201,8 @@ def run_validation(args: argparse.Namespace) -> None:
                     current_heading_deg,
                     heading_error_deg,
                     navigation_authority,
-                    metrics.camera_fps,
-                    metrics.detection_time_ms,
+                    measurement.fps,
+                    measurement.detection_time_ms,
                     tag_visible,
                     measurement.tag_id,
                     latest_pid_result,
@@ -1228,8 +1222,8 @@ def run_validation(args: argparse.Namespace) -> None:
                     current_heading_deg,
                     heading_error_deg,
                     navigation_authority,
-                    metrics.camera_fps,
-                    metrics.detection_time_ms,
+                    measurement.fps,
+                    measurement.detection_time_ms,
                     tag_visible,
                     latest_pid_result,
                     gate_status,
