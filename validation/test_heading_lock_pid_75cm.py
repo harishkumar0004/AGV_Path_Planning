@@ -123,6 +123,7 @@ class PIDDistanceLogger:
             writer = csv.writer(csv_file)
             writer.writerow(
                 [
+                    "event",
                     "timestamp",
                     "distance_travelled_cm",
                     "reference_heading_deg",
@@ -137,6 +138,17 @@ class PIDDistanceLogger:
                     "pid_output",
                     "left_frequency_hz",
                     "right_frequency_hz",
+                    "target_distance_cm",
+                    "actual_distance_cm",
+                    "max_heading_error_deg",
+                    "min_heading_error_deg",
+                    "avg_heading_error_deg",
+                    "final_heading_error_deg",
+                    "max_pid_output",
+                    "min_pid_output",
+                    "avg_pid_output",
+                    "correction_count",
+                    "runtime_sec",
                 ]
             )
 
@@ -164,6 +176,7 @@ class PIDDistanceLogger:
             writer = csv.writer(csv_file)
             writer.writerow(
                 [
+                    "SAMPLE",
                     format_csv(timestamp_sec),
                     format_csv(distance_travelled_cm),
                     format_csv(reference_heading_deg),
@@ -178,6 +191,60 @@ class PIDDistanceLogger:
                     format_csv(pid_result.pid_output if pid_result is not None else None),
                     format_csv(pid_result.left_frequency_hz if pid_result is not None else None),
                     format_csv(pid_result.right_frequency_hz if pid_result is not None else None),
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                ]
+            )
+
+    def write_summary(
+        self,
+        summary: dict[str, float | int | None],
+    ) -> None:
+        """
+        Append one final RUN_COMPLETE summary row.
+
+        Args:
+            summary: Calculated run summary values.
+        """
+        with self.csv_path.open("a", newline="") as csv_file:
+            writer = csv.writer(csv_file)
+            writer.writerow(
+                [
+                    "RUN_COMPLETE",
+                    format_csv(summary.get("runtime_sec")),
+                    format_csv(summary.get("actual_distance_cm")),
+                    format_csv(summary.get("reference_heading_deg")),
+                    format_csv(summary.get("final_current_heading_deg")),
+                    format_csv(summary.get("final_heading_error_deg")),
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    format_csv(summary.get("target_distance_cm")),
+                    format_csv(summary.get("actual_distance_cm")),
+                    format_csv(summary.get("max_heading_error_deg")),
+                    format_csv(summary.get("min_heading_error_deg")),
+                    format_csv(summary.get("avg_heading_error_deg")),
+                    format_csv(summary.get("final_heading_error_deg")),
+                    format_csv(summary.get("max_pid_output")),
+                    format_csv(summary.get("min_pid_output")),
+                    format_csv(summary.get("avg_pid_output")),
+                    summary.get("correction_count", ""),
+                    format_csv(summary.get("runtime_sec")),
                 ]
             )
 
@@ -381,36 +448,191 @@ def log_terminal(
     print()
 
 
-def print_run_summary(
+def calculate_run_summary(
     heading_error_samples: list[float],
     pid_output_samples: list[float],
     left_frequency_samples: list[float],
     right_frequency_samples: list[float],
-) -> None:
+    current_heading_samples: list[float],
+    reference_heading_deg: float | None,
+    target_distance_cm: float,
+    actual_distance_cm: float,
+    runtime_sec: float,
+) -> dict[str, float | int | None]:
     """
-    Print a compact heading-control summary for later PID tuning.
+    Calculate heading-control summary values for later PID tuning.
 
     Args:
         heading_error_samples: Heading error samples from the run.
         pid_output_samples: PID output samples from the run.
         left_frequency_samples: Left frequency samples from the run.
         right_frequency_samples: Right frequency samples from the run.
+        current_heading_samples: Current heading samples from the run.
+        reference_heading_deg: Stored navigation heading reference.
+        target_distance_cm: Commanded travel distance.
+        actual_distance_cm: Estimated actual travel distance.
+        runtime_sec: Movement runtime.
+
+    Returns:
+        Summary values.
     """
     if not heading_error_samples:
+        return {
+            "target_distance_cm": target_distance_cm,
+            "actual_distance_cm": actual_distance_cm,
+            "reference_heading_deg": reference_heading_deg,
+            "final_current_heading_deg": current_heading_samples[-1]
+            if current_heading_samples
+            else None,
+            "max_heading_error_deg": None,
+            "min_heading_error_deg": None,
+            "avg_heading_error_deg": None,
+            "final_heading_error_deg": None,
+            "max_pid_output": None,
+            "min_pid_output": None,
+            "avg_pid_output": None,
+            "max_left_frequency_hz": None,
+            "min_left_frequency_hz": None,
+            "max_right_frequency_hz": None,
+            "min_right_frequency_hz": None,
+            "correction_count": 0,
+            "runtime_sec": runtime_sec,
+        }
+
+    absolute_errors = [abs(error) for error in heading_error_samples]
+
+    return {
+        "target_distance_cm": target_distance_cm,
+        "actual_distance_cm": actual_distance_cm,
+        "reference_heading_deg": reference_heading_deg,
+        "final_current_heading_deg": current_heading_samples[-1]
+        if current_heading_samples
+        else None,
+        "max_heading_error_deg": max(heading_error_samples),
+        "min_heading_error_deg": min(heading_error_samples),
+        "avg_heading_error_deg": sum(absolute_errors) / len(absolute_errors),
+        "final_heading_error_deg": heading_error_samples[-1],
+        "max_pid_output": max(pid_output_samples) if pid_output_samples else None,
+        "min_pid_output": min(pid_output_samples) if pid_output_samples else None,
+        "avg_pid_output": sum(pid_output_samples) / len(pid_output_samples)
+        if pid_output_samples
+        else None,
+        "max_left_frequency_hz": max(left_frequency_samples)
+        if left_frequency_samples
+        else None,
+        "min_left_frequency_hz": min(left_frequency_samples)
+        if left_frequency_samples
+        else None,
+        "max_right_frequency_hz": max(right_frequency_samples)
+        if right_frequency_samples
+        else None,
+        "min_right_frequency_hz": min(right_frequency_samples)
+        if right_frequency_samples
+        else None,
+        "correction_count": sum(
+            1 for pid_output in pid_output_samples if abs(pid_output) > 0.0
+        ),
+        "runtime_sec": runtime_sec,
+    }
+
+
+def print_run_summary(summary: dict[str, float | int | None]) -> None:
+    """
+    Print the final heading-control run summary.
+
+    Args:
+        summary: Calculated run summary values.
+    """
+    if summary.get("max_heading_error_deg") is None:
         print("PID run summary unavailable: no heading samples were recorded.")
         return
 
-    absolute_errors = [abs(error) for error in heading_error_samples]
-    all_frequencies = left_frequency_samples + right_frequency_samples
+    print("==================================================")
+    print("RUN SUMMARY")
+    print("==================================================")
+    print()
 
-    print("PID 75 cm Run Summary")
-    print("Maximum Heading Error:", f"{max(absolute_errors):.2f} deg")
-    print("Average Heading Error:", f"{sum(absolute_errors) / len(absolute_errors):.2f} deg")
-    print("Final Heading Error:", f"{heading_error_samples[-1]:+.2f} deg")
-    print("Maximum PID Output:", f"{max(abs(output) for output in pid_output_samples):.2f}")
-    if all_frequencies:
-        print("Minimum Frequency Used:", f"{min(all_frequencies):.0f} Hz")
-        print("Maximum Frequency Used:", f"{max(all_frequencies):.0f} Hz")
+
+def finalize_run_summary(
+    logger: PIDDistanceLogger,
+    heading_error_samples: list[float],
+    pid_output_samples: list[float],
+    left_frequency_samples: list[float],
+    right_frequency_samples: list[float],
+    current_heading_samples: list[float],
+    reference_heading_deg: float | None,
+    target_distance_cm: float,
+    actual_distance_cm: float,
+    movement_start_time: float | None,
+    now: float,
+    summary_printed: bool,
+) -> bool:
+    """
+    Print and export the run summary once.
+
+    Args:
+        logger: CSV logger.
+        heading_error_samples: Heading error samples.
+        pid_output_samples: PID output samples.
+        left_frequency_samples: Left wheel frequency samples.
+        right_frequency_samples: Right wheel frequency samples.
+        current_heading_samples: Current heading samples.
+        reference_heading_deg: Stored navigation heading reference.
+        target_distance_cm: Commanded travel distance.
+        actual_distance_cm: Estimated distance travelled.
+        movement_start_time: Time when the first SET_DRIVE command was sent.
+        now: Current monotonic timestamp.
+        summary_printed: True when the summary was already emitted.
+
+    Returns:
+        True after the summary has been emitted.
+    """
+    if summary_printed:
+        return True
+
+    runtime_sec = 0.0
+    if movement_start_time is not None:
+        runtime_sec = max(now - movement_start_time, 0.0)
+
+    summary = calculate_run_summary(
+        heading_error_samples,
+        pid_output_samples,
+        left_frequency_samples,
+        right_frequency_samples,
+        current_heading_samples,
+        reference_heading_deg,
+        target_distance_cm,
+        actual_distance_cm,
+        runtime_sec,
+    )
+    print_run_summary(summary)
+    logger.write_summary(summary)
+    return True
+    print("Target Distance:", f"{summary['target_distance_cm']:.2f} cm")
+    print("Actual Distance:", f"{summary['actual_distance_cm']:.2f} cm")
+    print()
+    print("Reference Heading:", format_display(summary["reference_heading_deg"], " deg"))
+    print("Final Heading:", format_display(summary["final_current_heading_deg"], " deg"))
+    print()
+    print("Maximum Heading Error:", format_display(summary["max_heading_error_deg"], " deg", signed=True))
+    print("Minimum Heading Error:", format_display(summary["min_heading_error_deg"], " deg", signed=True))
+    print("Average Heading Error:", format_display(summary["avg_heading_error_deg"], " deg"))
+    print()
+    print("Maximum PID Output:", format_display(summary["max_pid_output"], signed=True))
+    print("Minimum PID Output:", format_display(summary["min_pid_output"], signed=True))
+    print("Average PID Output:", format_display(summary["avg_pid_output"], signed=True))
+    print()
+    print("Maximum Left Frequency:", format_display(summary["max_left_frequency_hz"], " Hz", decimals=0))
+    print("Minimum Left Frequency:", format_display(summary["min_left_frequency_hz"], " Hz", decimals=0))
+    print()
+    print("Maximum Right Frequency:", format_display(summary["max_right_frequency_hz"], " Hz", decimals=0))
+    print("Minimum Right Frequency:", format_display(summary["min_right_frequency_hz"], " Hz", decimals=0))
+    print()
+    print("PID Corrections Applied:", summary["correction_count"])
+    print()
+    print("Total Runtime:", f"{summary['runtime_sec']:.2f} sec")
+    print()
+    print("==================================================")
     print()
 
 
@@ -447,6 +669,7 @@ def run_validation(args: argparse.Namespace) -> None:
     pid_output_samples: list[float] = []
     left_frequency_samples: list[float] = []
     right_frequency_samples: list[float] = []
+    current_heading_samples: list[float] = []
 
     if not perception_manager.initialize():
         print("PerceptionManager failed to initialize camera.")
@@ -483,6 +706,20 @@ def run_validation(args: argparse.Namespace) -> None:
             if key in (ord("s"), ord("S")):
                 current_command = "STOP"
                 transmit_command(serial_controller, current_command, start_time, movement_start_time)
+                summary_printed = finalize_run_summary(
+                    logger,
+                    heading_error_samples,
+                    pid_output_samples,
+                    left_frequency_samples,
+                    right_frequency_samples,
+                    current_heading_samples,
+                    navigation_reference_heading_deg,
+                    args.travel_distance_cm,
+                    distance_estimate.travelled_cm,
+                    movement_start_time,
+                    now,
+                    summary_printed,
+                )
                 state = "STOPPED"
                 print("STATE TRANSITION >>> STOPPED")
 
@@ -567,6 +804,20 @@ def run_validation(args: argparse.Namespace) -> None:
                     state = "DISTANCE_COMPLETE"
                     print("TRAVEL DISTANCE COMPLETE")
                     print("STATE TRANSITION >>> DISTANCE_COMPLETE")
+                    summary_printed = finalize_run_summary(
+                        logger,
+                        heading_error_samples,
+                        pid_output_samples,
+                        left_frequency_samples,
+                        right_frequency_samples,
+                        current_heading_samples,
+                        navigation_reference_heading_deg,
+                        args.travel_distance_cm,
+                        distance_estimate.travelled_cm,
+                        movement_start_time,
+                        now,
+                        summary_printed,
+                    )
                 elif (
                     navigation_reference_heading_deg is not None
                     and current_heading_deg is not None
@@ -588,19 +839,27 @@ def run_validation(args: argparse.Namespace) -> None:
                     pid_output_samples.append(latest_pid_result.pid_output)
                     left_frequency_samples.append(latest_pid_result.left_frequency_hz)
                     right_frequency_samples.append(latest_pid_result.right_frequency_hz)
+                    current_heading_samples.append(current_heading_deg)
                     if movement_start_time is None:
                         movement_start_time = now
                         distance_estimate.last_update_time = now
                     last_pid_update_time = now
 
             elif state == "DISTANCE_COMPLETE" and not summary_printed:
-                print_run_summary(
+                summary_printed = finalize_run_summary(
+                    logger,
                     heading_error_samples,
                     pid_output_samples,
                     left_frequency_samples,
                     right_frequency_samples,
+                    current_heading_samples,
+                    navigation_reference_heading_deg,
+                    args.travel_distance_cm,
+                    distance_estimate.travelled_cm,
+                    movement_start_time,
+                    now,
+                    summary_printed,
                 )
-                summary_printed = True
 
             if (now - last_csv_time) >= args.csv_interval:
                 logger.write(
