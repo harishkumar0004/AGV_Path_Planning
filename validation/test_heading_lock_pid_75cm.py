@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import math
 import sys
 import time
 from dataclasses import dataclass
@@ -394,6 +395,122 @@ def send_set_drive(
         None,
     )
     return command
+
+
+def calculate_detection_orientation_deg(detection: dict | None) -> float | None:
+    """
+    Calculate AprilTag orientation for old PerceptionManager compatibility.
+
+    Args:
+        detection: Raw AprilTag detection dictionary.
+
+    Returns:
+        Orientation normalized to -90..+90 degrees.
+    """
+    if detection is None:
+        return None
+
+    corners = detection.get("corners", [])
+    if len(corners) < 2:
+        return None
+
+    x0, y0 = corners[0]
+    x1, y1 = corners[1]
+    raw_angle_deg = math.degrees(math.atan2(y1 - y0, x1 - x0))
+    return ((raw_angle_deg + 90.0) % 180.0) - 90.0
+
+
+def update_perception_compatible(
+    perception_manager: PerceptionManager,
+) -> tuple[PerceptionState, list[dict]]:
+    """
+    Update perception using either the new or old PerceptionManager API.
+
+    Args:
+        perception_manager: Active perception manager.
+
+    Returns:
+        Updated perception state and latest raw detections.
+    """
+    if hasattr(perception_manager, "update_state"):
+        measurement = perception_manager.update_state()
+        if hasattr(perception_manager, "get_detections"):
+            return measurement, perception_manager.get_detections()
+
+        return measurement, getattr(perception_manager, "last_detections", [])
+
+    detection_start_time = time.monotonic()
+    detections = perception_manager.update()
+    now = time.monotonic()
+    detection_time_ms = (now - detection_start_time) * 1000.0
+    measurement = perception_manager.application_state.perception
+    frame = perception_manager.last_frame
+
+    if not hasattr(update_perception_compatible, "_fps_window_start"):
+        update_perception_compatible._fps_window_start = now
+        update_perception_compatible._fps_frame_count = 0
+        update_perception_compatible._fps_value = 0.0
+
+    update_perception_compatible._fps_frame_count += 1
+    elapsed = now - update_perception_compatible._fps_window_start
+    if elapsed >= 1.0:
+        update_perception_compatible._fps_value = (
+            update_perception_compatible._fps_frame_count / elapsed
+        )
+        update_perception_compatible._fps_frame_count = 0
+        update_perception_compatible._fps_window_start = now
+
+    if frame is None:
+        measurement.frame_available = False
+        measurement.frame_width = None
+        measurement.frame_height = None
+        measurement.image_center_x = None
+        measurement.image_center_y = None
+    else:
+        frame_height, frame_width = frame.shape[:2]
+        measurement.frame_available = True
+        measurement.frame_width = frame_width
+        measurement.frame_height = frame_height
+        measurement.image_center_x = frame_width / 2
+        measurement.image_center_y = frame_height / 2
+
+    measurement.detection_time_ms = detection_time_ms
+    measurement.fps = update_perception_compatible._fps_value
+    measurement.tag_count = len(detections)
+    measurement.tag_ids = [detection["tag_id"] for detection in detections]
+
+    if detections:
+        first_detection = detections[0]
+        measurement.tag_visible = True
+        measurement.tag_id = first_detection["tag_id"]
+        measurement.center_x = first_detection["center_x"]
+        measurement.center_y = first_detection["center_y"]
+        measurement.tag_center_x = first_detection["center_x"]
+        measurement.tag_center_y = first_detection["center_y"]
+        measurement.orientation_deg = first_detection.get(
+            "orientation_deg",
+            calculate_detection_orientation_deg(first_detection),
+        )
+        if measurement.image_center_x is None:
+            measurement.position_error_px = None
+            measurement.position_error_x = None
+        else:
+            measurement.position_error_px = (
+                first_detection["center_x"] - measurement.image_center_x
+            )
+            measurement.position_error_x = measurement.position_error_px
+    else:
+        measurement.tag_visible = False
+        measurement.tag_id = None
+        measurement.center_x = None
+        measurement.center_y = None
+        measurement.tag_center_x = None
+        measurement.tag_center_y = None
+        measurement.position_error_px = None
+        measurement.position_error_x = None
+        measurement.orientation_deg = None
+
+    return measurement, detections
 
 
 def draw_overlay(
@@ -906,9 +1023,8 @@ def run_validation(args: argparse.Namespace) -> None:
 
     try:
         while True:
-            measurement = perception_manager.update_state()
+            measurement, detections = update_perception_compatible(perception_manager)
             frame = perception_manager.last_frame
-            detections = perception_manager.get_detections()
             detection = detections[0] if detections else None
             tag_visible = measurement.tag_visible
 
