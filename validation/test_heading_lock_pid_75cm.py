@@ -20,12 +20,12 @@ try:
     from communication.serial_motor_controller import SerialMotorController
     from core.application_state import ApplicationState
     from perception.perception_manager import PerceptionManager
+    from validation.performance_monitor import PerformanceMonitor
     from validation.test_heading_lock import (
         PIDResult,
         StartGateStatus,
         TagMeasurement,
         HeadingPIDController,
-        calculate_tag_orientation_deg,
         choose_initial_orientation_state,
         command_for_alignment_state,
         evaluate_start_gate,
@@ -130,6 +130,12 @@ class PIDDistanceLogger:
                     "current_heading_deg",
                     "heading_error_deg",
                     "navigation_authority",
+                    "fps",
+                    "detection_time_ms",
+                    "tag_visible",
+                    "tag_id",
+                    "tag_orientation_deg",
+                    "position_error_px",
                     "kp",
                     "ki",
                     "kd",
@@ -161,6 +167,12 @@ class PIDDistanceLogger:
         current_heading_deg: float | None,
         heading_error_deg: float | None,
         navigation_authority: str,
+        fps: float,
+        detection_time_ms: float,
+        tag_visible: bool,
+        tag_id: int | None,
+        tag_orientation_deg: float | None,
+        position_error_px: float | None,
         pid_result: PIDResult | None,
     ) -> None:
         """
@@ -173,6 +185,12 @@ class PIDDistanceLogger:
             current_heading_deg: Latest IMU heading.
             heading_error_deg: Current heading error.
             navigation_authority: VISION when a tag controls steering, otherwise IMU.
+            fps: Camera FPS from PerformanceMonitor.
+            detection_time_ms: Latest detection update time.
+            tag_visible: True when a tag is visible.
+            tag_id: Latest visible tag ID.
+            tag_orientation_deg: Latest tag orientation.
+            position_error_px: Latest horizontal position error.
             pid_result: Latest PID calculation.
         """
         with self.csv_path.open("a", newline="") as csv_file:
@@ -186,6 +204,12 @@ class PIDDistanceLogger:
                     format_csv(current_heading_deg),
                     format_csv(heading_error_deg),
                     navigation_authority,
+                    format_csv(fps),
+                    format_csv(detection_time_ms),
+                    "YES" if tag_visible else "NO",
+                    tag_id if tag_id is not None else "",
+                    format_csv(tag_orientation_deg),
+                    format_csv(position_error_px),
                     format_csv(pid_result.kp if pid_result is not None else None),
                     format_csv(pid_result.ki if pid_result is not None else None),
                     format_csv(pid_result.kd if pid_result is not None else None),
@@ -229,6 +253,12 @@ class PIDDistanceLogger:
                     format_csv(summary.get("reference_heading_deg")),
                     format_csv(summary.get("final_current_heading_deg")),
                     format_csv(summary.get("final_heading_error_deg")),
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
                     "",
                     "",
                     "",
@@ -317,6 +347,9 @@ def draw_overlay(
     current_heading_deg: float | None,
     heading_error_deg: float | None,
     navigation_authority: str,
+    fps: float,
+    detection_time_ms: float,
+    tag_visible: bool,
     pid_result: PIDResult | None,
     gate_status: StartGateStatus | None,
     current_command: str,
@@ -335,6 +368,9 @@ def draw_overlay(
         current_heading_deg: Latest IMU heading.
         heading_error_deg: Current heading error.
         navigation_authority: Current steering authority.
+        fps: Camera FPS from PerformanceMonitor.
+        detection_time_ms: Latest detection update time.
+        tag_visible: True when a tag is visible.
         pid_result: Latest PID result.
         gate_status: Current vision gate status.
         current_command: Last transmitted command.
@@ -386,6 +422,10 @@ def draw_overlay(
         ("Current Heading", format_display(current_heading_deg, " deg", signed=True)),
         ("Heading Error", format_display(heading_error_deg, " deg", signed=True)),
         ("Authority", navigation_authority),
+        ("FPS", f"{fps:.1f}"),
+        ("Detection Time", f"{detection_time_ms:.1f} ms"),
+        ("Tag Visible", "YES" if tag_visible else "NO"),
+        ("Tag ID", str(measurement.tag_id) if measurement.tag_id is not None else "None"),
         ("P Term", format_display(pid_result.p_term if pid_result else None, signed=True)),
         ("I Term", format_display(pid_result.i_term if pid_result else None, signed=True)),
         ("D Term", format_display(pid_result.d_term if pid_result else None, signed=True)),
@@ -429,6 +469,10 @@ def log_terminal(
     current_heading_deg: float | None,
     heading_error_deg: float | None,
     navigation_authority: str,
+    fps: float,
+    detection_time_ms: float,
+    tag_visible: bool,
+    tag_id: int | None,
     pid_result: PIDResult | None,
     current_command: str,
 ) -> None:
@@ -441,6 +485,10 @@ def log_terminal(
         current_heading_deg: Latest IMU heading.
         heading_error_deg: Current heading error.
         navigation_authority: Current steering authority.
+        fps: Camera FPS from PerformanceMonitor.
+        detection_time_ms: Latest detection update time.
+        tag_visible: True when a tag is visible.
+        tag_id: Latest visible tag ID.
         pid_result: Latest PID result.
         current_command: Last transmitted command.
     """
@@ -449,6 +497,10 @@ def log_terminal(
     print("Current Heading:", format_display(current_heading_deg, " deg", signed=True))
     print("Heading Error:", format_display(heading_error_deg, " deg", signed=True))
     print("Navigation Authority:", navigation_authority)
+    print("FPS:", f"{fps:.1f}")
+    print("Detection Time:", f"{detection_time_ms:.1f} ms")
+    print("Tag Visible:", "YES" if tag_visible else "NO")
+    print("Tag ID:", tag_id if tag_id is not None else "None")
     print("P Term:", format_display(pid_result.p_term if pid_result else None, signed=True))
     print("I Term:", format_display(pid_result.i_term if pid_result else None, signed=True))
     print("D Term:", format_display(pid_result.d_term if pid_result else None, signed=True))
@@ -662,6 +714,7 @@ def run_validation(args: argparse.Namespace) -> None:
     )
     pid_controller = create_pid_controller()
     distance_estimate = DistanceEstimate()
+    monitor = PerformanceMonitor()
     logger = PIDDistanceLogger(Path(args.csv).expanduser().resolve())
 
     state = "WAIT_FOR_TAG1"
@@ -695,10 +748,14 @@ def run_validation(args: argparse.Namespace) -> None:
 
     try:
         while True:
-            detections = perception_manager.update()
+            detections = monitor.measure_detection_cycle(perception_manager.update)
+            monitor.record_camera_frame()
             frame = perception_manager.last_frame
             detection = detections[0] if detections else None
             measurement = measure_tag(frame, detection)
+            tag_visible = measurement.tag_id is not None
+            monitor.record_tag_detection(measurement.tag_id)
+            metrics = monitor.metrics
 
             imu_reader.update_from_connection(serial_controller.serial_connection)
             current_heading_deg = imu_reader.get_heading()
@@ -902,6 +959,12 @@ def run_validation(args: argparse.Namespace) -> None:
                     current_heading_deg,
                     heading_error_deg,
                     navigation_authority,
+                    metrics.camera_fps,
+                    metrics.detection_time_ms,
+                    tag_visible,
+                    measurement.tag_id,
+                    measurement.orientation_deg,
+                    measurement.position_error_x,
                     latest_pid_result,
                 )
                 last_csv_time = now
@@ -913,6 +976,10 @@ def run_validation(args: argparse.Namespace) -> None:
                     current_heading_deg,
                     heading_error_deg,
                     navigation_authority,
+                    metrics.camera_fps,
+                    metrics.detection_time_ms,
+                    tag_visible,
+                    measurement.tag_id,
                     latest_pid_result,
                     current_command,
                 )
@@ -930,6 +997,9 @@ def run_validation(args: argparse.Namespace) -> None:
                     current_heading_deg,
                     heading_error_deg,
                     navigation_authority,
+                    metrics.camera_fps,
+                    metrics.detection_time_ms,
+                    tag_visible,
                     latest_pid_result,
                     gate_status,
                     current_command,

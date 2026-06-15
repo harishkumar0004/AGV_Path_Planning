@@ -72,6 +72,24 @@ class PerformanceMonitor:
             self._detection_frame_count = 0
             self._detection_window_start = now
 
+    def measure_detection_cycle(self, detection_update):
+        """
+        Time one perception/detection update and update detection metrics.
+
+        Args:
+            detection_update: Callable that performs one perception update.
+
+        Returns:
+            The value returned by detection_update.
+        """
+        start_time = time.monotonic()
+        result = detection_update()
+        self.metrics.detection_time_ms = (
+            time.monotonic() - start_time
+        ) * 1000.0
+        self.record_detection_cycle()
+        return result
+
     def record_tag_detection(self, tag_id: int | None) -> None:
         """
         Record the currently visible tag.

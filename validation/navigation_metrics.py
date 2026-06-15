@@ -11,6 +11,9 @@ class NavigationMetrics:
     # AprilTag processing rate measured from perception updates.
     detection_fps: float = 0.0
 
+    # Most recent AprilTag detection/perception update duration.
+    detection_time_ms: float = 0.0
+
     # Number of frames where each tag ID was visible.
     tag_detection_counts: dict[int, int] = field(default_factory=dict)
 
