@@ -118,46 +118,45 @@ class PIDDistanceLogger:
         """
         self.csv_path = csv_path
         self.csv_path.parent.mkdir(parents=True, exist_ok=True)
-
-        with self.csv_path.open("w", newline="") as csv_file:
-            writer = csv.writer(csv_file)
-            writer.writerow(
-                [
-                    "event",
-                    "timestamp",
-                    "distance_travelled_cm",
-                    "reference_heading_deg",
-                    "current_heading_deg",
-                    "heading_error_deg",
-                    "navigation_authority",
-                    "fps",
-                    "detection_time_ms",
-                    "tag_visible",
-                    "tag_id",
-                    "tag_orientation_deg",
-                    "position_error_px",
-                    "kp",
-                    "ki",
-                    "kd",
-                    "p_term",
-                    "i_term",
-                    "d_term",
-                    "pid_output",
-                    "left_frequency_hz",
-                    "right_frequency_hz",
-                    "target_distance_cm",
-                    "actual_distance_cm",
-                    "max_heading_error_deg",
-                    "min_heading_error_deg",
-                    "avg_heading_error_deg",
-                    "final_heading_error_deg",
-                    "max_pid_output",
-                    "min_pid_output",
-                    "avg_pid_output",
-                    "correction_count",
-                    "runtime_sec",
-                ]
-            )
+        self._csv_file = self.csv_path.open("w", newline="")
+        self._writer = csv.writer(self._csv_file)
+        self._writer.writerow(
+            [
+                "event",
+                "timestamp",
+                "distance_travelled_cm",
+                "reference_heading_deg",
+                "current_heading_deg",
+                "heading_error_deg",
+                "navigation_authority",
+                "fps",
+                "detection_time_ms",
+                "tag_visible",
+                "tag_id",
+                "tag_orientation_deg",
+                "position_error_px",
+                "kp",
+                "ki",
+                "kd",
+                "p_term",
+                "i_term",
+                "d_term",
+                "pid_output",
+                "left_frequency_hz",
+                "right_frequency_hz",
+                "target_distance_cm",
+                "actual_distance_cm",
+                "max_heading_error_deg",
+                "min_heading_error_deg",
+                "avg_heading_error_deg",
+                "final_heading_error_deg",
+                "max_pid_output",
+                "min_pid_output",
+                "avg_pid_output",
+                "correction_count",
+                "runtime_sec",
+            ]
+        )
 
     def write(
         self,
@@ -193,45 +192,43 @@ class PIDDistanceLogger:
             position_error_px: Latest horizontal position error.
             pid_result: Latest PID calculation.
         """
-        with self.csv_path.open("a", newline="") as csv_file:
-            writer = csv.writer(csv_file)
-            writer.writerow(
-                [
-                    "SAMPLE",
-                    format_csv(timestamp_sec),
-                    format_csv(distance_travelled_cm),
-                    format_csv(reference_heading_deg),
-                    format_csv(current_heading_deg),
-                    format_csv(heading_error_deg),
-                    navigation_authority,
-                    format_csv(fps),
-                    format_csv(detection_time_ms),
-                    "YES" if tag_visible else "NO",
-                    tag_id if tag_id is not None else "",
-                    format_csv(tag_orientation_deg),
-                    format_csv(position_error_px),
-                    format_csv(pid_result.kp if pid_result is not None else None),
-                    format_csv(pid_result.ki if pid_result is not None else None),
-                    format_csv(pid_result.kd if pid_result is not None else None),
-                    format_csv(pid_result.p_term if pid_result is not None else None),
-                    format_csv(pid_result.i_term if pid_result is not None else None),
-                    format_csv(pid_result.d_term if pid_result is not None else None),
-                    format_csv(pid_result.pid_output if pid_result is not None else None),
-                    format_csv(pid_result.left_frequency_hz if pid_result is not None else None),
-                    format_csv(pid_result.right_frequency_hz if pid_result is not None else None),
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                ]
-            )
+        self._writer.writerow(
+            [
+                "SAMPLE",
+                format_csv(timestamp_sec),
+                format_csv(distance_travelled_cm),
+                format_csv(reference_heading_deg),
+                format_csv(current_heading_deg),
+                format_csv(heading_error_deg),
+                navigation_authority,
+                format_csv(fps),
+                format_csv(detection_time_ms),
+                "YES" if tag_visible else "NO",
+                tag_id if tag_id is not None else "",
+                format_csv(tag_orientation_deg),
+                format_csv(position_error_px),
+                format_csv(pid_result.kp if pid_result is not None else None),
+                format_csv(pid_result.ki if pid_result is not None else None),
+                format_csv(pid_result.kd if pid_result is not None else None),
+                format_csv(pid_result.p_term if pid_result is not None else None),
+                format_csv(pid_result.i_term if pid_result is not None else None),
+                format_csv(pid_result.d_term if pid_result is not None else None),
+                format_csv(pid_result.pid_output if pid_result is not None else None),
+                format_csv(pid_result.left_frequency_hz if pid_result is not None else None),
+                format_csv(pid_result.right_frequency_hz if pid_result is not None else None),
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ]
+        )
 
     def write_summary(
         self,
@@ -243,45 +240,44 @@ class PIDDistanceLogger:
         Args:
             summary: Calculated run summary values.
         """
-        with self.csv_path.open("a", newline="") as csv_file:
-            writer = csv.writer(csv_file)
-            writer.writerow(
-                [
-                    "RUN_COMPLETE",
-                    format_csv(summary.get("runtime_sec")),
-                    format_csv(summary.get("actual_distance_cm")),
-                    format_csv(summary.get("reference_heading_deg")),
-                    format_csv(summary.get("final_current_heading_deg")),
-                    format_csv(summary.get("final_heading_error_deg")),
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    format_csv(summary.get("target_distance_cm")),
-                    format_csv(summary.get("actual_distance_cm")),
-                    format_csv(summary.get("max_heading_error_deg")),
-                    format_csv(summary.get("min_heading_error_deg")),
-                    format_csv(summary.get("avg_heading_error_deg")),
-                    format_csv(summary.get("final_heading_error_deg")),
-                    format_csv(summary.get("max_pid_output")),
-                    format_csv(summary.get("min_pid_output")),
-                    format_csv(summary.get("avg_pid_output")),
-                    summary.get("correction_count", ""),
-                    format_csv(summary.get("runtime_sec")),
-                ]
-            )
+        self._writer.writerow(
+            [
+                "RUN_COMPLETE",
+                format_csv(summary.get("runtime_sec")),
+                format_csv(summary.get("actual_distance_cm")),
+                format_csv(summary.get("reference_heading_deg")),
+                format_csv(summary.get("final_current_heading_deg")),
+                format_csv(summary.get("final_heading_error_deg")),
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                format_csv(summary.get("target_distance_cm")),
+                format_csv(summary.get("actual_distance_cm")),
+                format_csv(summary.get("max_heading_error_deg")),
+                format_csv(summary.get("min_heading_error_deg")),
+                format_csv(summary.get("avg_heading_error_deg")),
+                format_csv(summary.get("final_heading_error_deg")),
+                format_csv(summary.get("max_pid_output")),
+                format_csv(summary.get("min_pid_output")),
+                format_csv(summary.get("avg_pid_output")),
+                summary.get("correction_count", ""),
+                format_csv(summary.get("runtime_sec")),
+            ]
+        )
+        self._csv_file.flush()
 
     def write_event(
         self,
@@ -305,45 +301,49 @@ class PIDDistanceLogger:
             position_error_px: Visible tag position error, when available.
             navigation_authority: Current navigation authority.
         """
-        with self.csv_path.open("a", newline="") as csv_file:
-            writer = csv.writer(csv_file)
-            writer.writerow(
-                [
-                    event_name,
-                    format_csv(timestamp_sec),
-                    format_csv(distance_travelled_cm),
-                    "",
-                    "",
-                    "",
-                    navigation_authority,
-                    "",
-                    "",
-                    "YES" if tag_id is not None else "NO",
-                    tag_id if tag_id is not None else "",
-                    format_csv(tag_orientation_deg),
-                    format_csv(position_error_px),
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                    "",
-                ]
-            )
+        self._writer.writerow(
+            [
+                event_name,
+                format_csv(timestamp_sec),
+                format_csv(distance_travelled_cm),
+                "",
+                "",
+                "",
+                navigation_authority,
+                "",
+                "",
+                "YES" if tag_id is not None else "NO",
+                tag_id if tag_id is not None else "",
+                format_csv(tag_orientation_deg),
+                format_csv(position_error_px),
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ]
+        )
+        self._csv_file.flush()
+
+    def close(self) -> None:
+        """Flush and close the CSV log file."""
+        self._csv_file.flush()
+        self._csv_file.close()
 
 
 def create_pid_controller() -> HeadingPIDController:
@@ -452,14 +452,28 @@ def draw_overlay(
     )
 
     if detection is not None:
-        corners = [
-            (int(corner_x), int(corner_y))
-            for corner_x, corner_y in detection["corners"]
-        ]
-        for index, corner in enumerate(corners):
-            cv2.line(frame, corner, corners[(index + 1) % len(corners)], (0, 255, 0), 2)
+        corners = detection["corners"]
+        corner_count = len(corners)
+        for index in range(corner_count):
+            corner_x, corner_y = corners[index]
+            next_corner_x, next_corner_y = corners[(index + 1) % corner_count]
+            cv2.line(
+                frame,
+                (int(corner_x), int(corner_y)),
+                (int(next_corner_x), int(next_corner_y)),
+                (0, 255, 0),
+                2,
+            )
         if len(corners) >= 2:
-            cv2.line(frame, corners[0], corners[1], (255, 0, 255), 3)
+            first_corner_x, first_corner_y = corners[0]
+            second_corner_x, second_corner_y = corners[1]
+            cv2.line(
+                frame,
+                (int(first_corner_x), int(first_corner_y)),
+                (int(second_corner_x), int(second_corner_y)),
+                (255, 0, 255),
+                3,
+            )
         if measurement.tag_center_x is not None and measurement.tag_center_y is not None:
             cv2.circle(
                 frame,
@@ -570,6 +584,47 @@ def log_terminal(
     print("Left Frequency:", format_display(pid_result.left_frequency_hz if pid_result else None, " Hz"))
     print("Right Frequency:", format_display(pid_result.right_frequency_hz if pid_result else None, " Hz"))
     print("Command:", current_command)
+    print()
+
+
+def print_processing_startup_summary(
+    perception_manager: PerceptionManager,
+    frame,
+    fps: float,
+    detection_time_ms: float,
+) -> None:
+    """
+    Print measured camera and detection resolution details.
+
+    Args:
+        perception_manager: Active perception manager.
+        frame: Latest camera frame.
+        fps: Measured camera loop FPS.
+        detection_time_ms: Latest detection update time.
+    """
+    if frame is None:
+        return
+
+    frame_height, frame_width = frame.shape[:2]
+    diagnostics = perception_manager.camera_manager.diagnostics
+
+    configured_resolution = "Unknown"
+    target_fps = 0.0
+    pixel_format = "Unknown"
+    if diagnostics is not None:
+        configured_resolution = (
+            f"{diagnostics.configured_width}x{diagnostics.configured_height}"
+        )
+        target_fps = diagnostics.expected_fps
+        pixel_format = diagnostics.pixel_format
+
+    print("Processing startup summary:")
+    print(f"Camera Resolution: {configured_resolution}")
+    print(f"Detection Resolution: {frame_width}x{frame_height}")
+    print(f"Pixel Format: {pixel_format}")
+    print(f"Target FPS: {target_fps:.1f}")
+    print(f"Actual FPS: {fps:.1f}")
+    print(f"Detection Time: {detection_time_ms:.1f} ms")
     print()
 
 
@@ -833,6 +888,7 @@ def run_validation(args: argparse.Namespace) -> None:
     last_logged_tag_id: int | None = None
     vision_authority_tag_id: int | None = None
     summary_printed = False
+    processing_summary_printed = False
     heading_error_samples: list[float] = []
     pid_output_samples: list[float] = []
     left_frequency_samples: list[float] = []
@@ -841,9 +897,11 @@ def run_validation(args: argparse.Namespace) -> None:
 
     if not perception_manager.initialize():
         print("PerceptionManager failed to initialize camera.")
+        logger.close()
         return
 
     if not serial_controller.connect():
+        logger.close()
         perception_manager.release()
         return
 
@@ -859,6 +917,19 @@ def run_validation(args: argparse.Namespace) -> None:
             tag_visible = measurement.tag_id is not None
             monitor.record_tag_detection(measurement.tag_id)
             metrics = monitor.metrics
+
+            if (
+                not processing_summary_printed
+                and frame is not None
+                and metrics.camera_fps > 0.0
+            ):
+                print_processing_startup_summary(
+                    perception_manager,
+                    frame,
+                    metrics.camera_fps,
+                    metrics.detection_time_ms,
+                )
+                processing_summary_printed = True
 
             imu_reader.update_from_connection(serial_controller.serial_connection)
             current_heading_deg = imu_reader.get_heading()
@@ -1172,6 +1243,7 @@ def run_validation(args: argparse.Namespace) -> None:
         print("Stopping PID heading validation.")
     finally:
         transmit_command(serial_controller, "STOP", start_time, movement_start_time)
+        logger.close()
         serial_controller.disconnect()
         perception_manager.release()
         cv2.destroyAllWindows()
