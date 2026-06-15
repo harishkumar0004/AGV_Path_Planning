@@ -34,11 +34,12 @@ HEADING_DEADBAND_DEG = 0.5
 MAX_INTEGRAL = 50.0
 MAX_CORRECTION = 1000.0
 
-BASE_FREQUENCY_HZ = 10000.0
+BASE_FREQUENCY_HZ = 9000.0
 MIN_FREQUENCY_HZ = 7000.0
 MAX_FREQUENCY_HZ = 10000.0
 PID_UPDATE_INTERVAL_SEC = 0.05
 
+TRAVEL_DISTANCE_CM = 75.0
 
 @dataclass
 class TagMeasurement:
@@ -186,12 +187,12 @@ class HeadingPIDController:
         )
 
         left_frequency_hz = clamp_float(
-            self.base_frequency_hz - pid_output,
+            self.base_frequency_hz + pid_output,
             self.min_frequency_hz,
             self.max_frequency_hz,
         )
         right_frequency_hz = clamp_float(
-            self.base_frequency_hz + pid_output,
+            self.base_frequency_hz - pid_output,
             self.min_frequency_hz,
             self.max_frequency_hz,
         )
@@ -228,6 +229,7 @@ class ContinuousNavigationLogger:
             writer.writerow(
                 [
                     "timestamp",
+                    "distance_travelled_cm",
                     "state",
                     "reference_heading_deg",
                     "current_heading_deg",
@@ -250,6 +252,7 @@ class ContinuousNavigationLogger:
     def write(
         self,
         timestamp_sec: float,
+        distance_travelled_cm: float,
         state: str,
         measurement: TagMeasurement,
         reference_heading_deg: float | None,
@@ -278,6 +281,7 @@ class ContinuousNavigationLogger:
             writer.writerow(
                 [
                     format_csv(timestamp_sec),
+                    format_csv(distance_travelled_cm),
                     state,
                     format_csv(reference_heading_deg),
                     format_csv(current_heading_deg),
