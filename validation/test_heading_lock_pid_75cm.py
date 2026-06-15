@@ -52,6 +52,7 @@ BASE_FREQUENCY_HZ = 9000.0
 MIN_FREQUENCY_HZ = 8000.0
 MAX_FREQUENCY_HZ = 10000.0
 PID_UPDATE_INTERVAL_SEC = 0.05
+VISION_LOST_FRAME_THRESHOLD = 5
 
 DEFAULT_TRAVEL_DISTANCE_CM = 75.0
 DEFAULT_WHEEL_DIAMETER_MM = 117.0
@@ -128,6 +129,7 @@ class PIDDistanceLogger:
                 "current_heading_deg",
                 "heading_error_deg",
                 "navigation_authority",
+                "vision_lost_count",
                 "fps",
                 "detection_time_ms",
                 "tag_visible",
@@ -165,6 +167,7 @@ class PIDDistanceLogger:
         current_heading_deg: float | None,
         heading_error_deg: float | None,
         navigation_authority: str,
+        vision_lost_count: int,
         fps: float,
         detection_time_ms: float,
         tag_visible: bool,
@@ -183,6 +186,7 @@ class PIDDistanceLogger:
             current_heading_deg: Latest IMU heading.
             heading_error_deg: Current heading error.
             navigation_authority: VISION when a tag controls steering, otherwise IMU.
+            vision_lost_count: Consecutive missed frames while holding VISION.
             fps: Camera FPS from PerceptionManager.
             detection_time_ms: Latest detection update time.
             tag_visible: True when a tag is visible.
@@ -200,6 +204,7 @@ class PIDDistanceLogger:
                 format_csv(current_heading_deg),
                 format_csv(heading_error_deg),
                 navigation_authority,
+                vision_lost_count,
                 format_csv(fps),
                 format_csv(detection_time_ms),
                 "YES" if tag_visible else "NO",
@@ -263,6 +268,7 @@ class PIDDistanceLogger:
                 "",
                 "",
                 "",
+                "",
                 format_csv(summary.get("target_distance_cm")),
                 format_csv(summary.get("actual_distance_cm")),
                 format_csv(summary.get("max_heading_error_deg")),
@@ -309,6 +315,7 @@ class PIDDistanceLogger:
                 "",
                 "",
                 navigation_authority,
+                "",
                 "",
                 "",
                 "YES" if tag_id is not None else "NO",
@@ -524,6 +531,7 @@ def draw_overlay(
     current_heading_deg: float | None,
     heading_error_deg: float | None,
     navigation_authority: str,
+    vision_lost_count: int,
     fps: float,
     detection_time_ms: float,
     tag_visible: bool,
@@ -545,6 +553,7 @@ def draw_overlay(
         current_heading_deg: Latest IMU heading.
         heading_error_deg: Current heading error.
         navigation_authority: Current steering authority.
+        vision_lost_count: Consecutive missed frames before VISION exits.
         fps: Camera FPS from PerceptionManager.
         detection_time_ms: Latest detection update time.
         tag_visible: True when a tag is visible.
@@ -613,6 +622,7 @@ def draw_overlay(
         ("Current Heading", format_display(current_heading_deg, " deg", signed=True)),
         ("Heading Error", format_display(heading_error_deg, " deg", signed=True)),
         ("Authority", navigation_authority),
+        ("Vision Lost Count", str(vision_lost_count)),
         ("FPS", f"{fps:.1f}"),
         ("Detection Time", f"{detection_time_ms:.1f} ms"),
         ("Tag Visible", "YES" if tag_visible else "NO"),
@@ -660,6 +670,7 @@ def log_terminal(
     current_heading_deg: float | None,
     heading_error_deg: float | None,
     navigation_authority: str,
+    vision_lost_count: int,
     fps: float,
     detection_time_ms: float,
     tag_visible: bool,
@@ -676,6 +687,7 @@ def log_terminal(
         current_heading_deg: Latest IMU heading.
         heading_error_deg: Current heading error.
         navigation_authority: Current steering authority.
+        vision_lost_count: Consecutive missed frames before VISION exits.
         fps: Camera FPS from PerceptionManager.
         detection_time_ms: Latest detection update time.
         tag_visible: True when a tag is visible.
@@ -688,6 +700,7 @@ def log_terminal(
     print("Current Heading:", format_display(current_heading_deg, " deg", signed=True))
     print("Heading Error:", format_display(heading_error_deg, " deg", signed=True))
     print("Navigation Authority:", navigation_authority)
+    print("VISION_LOST_COUNT:", vision_lost_count)
     print("FPS:", f"{fps:.1f}")
     print("Detection Time:", f"{detection_time_ms:.1f} ms")
     print("Tag Visible:", "YES" if tag_visible else "NO")
@@ -999,6 +1012,8 @@ def run_validation(args: argparse.Namespace) -> None:
     start_time = time.monotonic()
     movement_start_time: float | None = None
     navigation_authority = "NONE"
+    vision_lost_count = 0
+    last_vision_error_deg: float | None = None
     last_logged_tag_id: int | None = None
     vision_authority_tag_id: int | None = None
     summary_printed = False
@@ -1172,7 +1187,20 @@ def run_validation(args: argparse.Namespace) -> None:
                 )
 
                 if tag_has_valid_orientation:
+                    vision_lost_count = 0
+                    last_vision_error_deg = measurement.orientation_deg
                     selected_authority = "VISION"
+                elif navigation_authority == "VISION":
+                    vision_lost_count += 1
+                    if vision_lost_count < VISION_LOST_FRAME_THRESHOLD:
+                        selected_authority = "VISION"
+                    elif (
+                        navigation_reference_heading_deg is not None
+                        and current_heading_deg is not None
+                    ):
+                        selected_authority = "IMU"
+                    else:
+                        selected_authority = "NONE"
                 elif (
                     navigation_reference_heading_deg is not None
                     and current_heading_deg is not None
@@ -1210,11 +1238,13 @@ def run_validation(args: argparse.Namespace) -> None:
                             navigation_authority,
                         )
                         vision_authority_tag_id = None
+                        last_vision_error_deg = None
 
                     navigation_authority = selected_authority
                     if navigation_authority != "NONE":
                         pid_controller.reset()
                     print("NAVIGATION AUTHORITY:", navigation_authority)
+                    print("VISION_LOST_COUNT:", vision_lost_count)
 
                 if distance_estimate.travelled_cm >= args.travel_distance_cm:
                     current_command = "STOP"
@@ -1241,7 +1271,11 @@ def run_validation(args: argparse.Namespace) -> None:
                     and (now - last_pid_update_time) >= PID_UPDATE_INTERVAL_SEC
                 ):
                     if navigation_authority == "VISION":
-                        selected_error_deg = measurement.orientation_deg
+                        selected_error_deg = (
+                            measurement.orientation_deg
+                            if measurement.orientation_deg is not None
+                            else last_vision_error_deg
+                        )
                     elif (
                         navigation_authority == "IMU"
                         and current_heading_deg is not None
@@ -1300,6 +1334,7 @@ def run_validation(args: argparse.Namespace) -> None:
                     current_heading_deg,
                     heading_error_deg,
                     navigation_authority,
+                    vision_lost_count,
                     measurement.fps,
                     measurement.detection_time_ms,
                     tag_visible,
@@ -1317,6 +1352,7 @@ def run_validation(args: argparse.Namespace) -> None:
                     current_heading_deg,
                     heading_error_deg,
                     navigation_authority,
+                    vision_lost_count,
                     measurement.fps,
                     measurement.detection_time_ms,
                     tag_visible,
@@ -1338,6 +1374,7 @@ def run_validation(args: argparse.Namespace) -> None:
                     current_heading_deg,
                     heading_error_deg,
                     navigation_authority,
+                    vision_lost_count,
                     measurement.fps,
                     measurement.detection_time_ms,
                     tag_visible,
