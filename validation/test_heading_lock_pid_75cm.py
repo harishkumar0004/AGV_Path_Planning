@@ -444,6 +444,8 @@ class PIDDistanceLogger:
                 "tag_orientation_deg",
                 "position_error_px",
                 "position_component_deg",
+                "position_weight",
+                "orientation_weight",
                 "vision_error_deg",
                 "orientation_position_relationship",
                 "orientation_contribution_pct",
@@ -497,6 +499,8 @@ class PIDDistanceLogger:
         tag_orientation_deg: float | None,
         position_error_px: float | None,
         position_component_deg: float | None,
+        position_weight: float | None,
+        orientation_weight: float | None,
         vision_error_deg: float | None,
         orientation_position_relationship: str,
         orientation_contribution_pct: float | None,
@@ -524,6 +528,8 @@ class PIDDistanceLogger:
             tag_orientation_deg: Latest tag orientation.
             position_error_px: Latest horizontal position error.
             position_component_deg: Shadow position correction component.
+            position_weight: Adaptive position weight.
+            orientation_weight: Adaptive orientation weight.
             vision_error_deg: Shadow combined vision error.
             orientation_position_relationship: Direction relationship between components.
             orientation_contribution_pct: Orientation share of combined magnitude.
@@ -548,6 +554,8 @@ class PIDDistanceLogger:
                 format_csv(tag_orientation_deg),
                 format_csv(position_error_px),
                 format_csv(position_component_deg),
+                format_csv(position_weight),
+                format_csv(orientation_weight),
                 format_csv(vision_error_deg),
                 orientation_position_relationship,
                 format_csv(orientation_contribution_pct),
@@ -623,6 +631,8 @@ class PIDDistanceLogger:
                 "",
                 "",
                 "",
+                "",
+                "",
                 format_csv(summary.get("target_distance_cm")),
                 format_csv(summary.get("actual_distance_cm")),
                 format_csv(summary.get("max_heading_error_deg")),
@@ -657,6 +667,8 @@ class PIDDistanceLogger:
         tag_orientation_deg: float | None,
         position_error_px: float | None,
         position_component_deg: float | None,
+        position_weight: float | None,
+        orientation_weight: float | None,
         vision_error_deg: float | None,
         orientation_position_relationship: str,
         orientation_contribution_pct: float | None,
@@ -677,6 +689,8 @@ class PIDDistanceLogger:
             tag_orientation_deg: Visible tag orientation, when available.
             position_error_px: Visible tag position error, when available.
             position_component_deg: Shadow position correction component.
+            position_weight: Adaptive position weight.
+            orientation_weight: Adaptive orientation weight.
             vision_error_deg: Shadow combined vision error.
             orientation_position_relationship: Direction relationship between components.
             orientation_contribution_pct: Orientation share of combined magnitude.
@@ -701,6 +715,8 @@ class PIDDistanceLogger:
                 format_csv(tag_orientation_deg),
                 format_csv(position_error_px),
                 format_csv(position_component_deg),
+                format_csv(position_weight),
+                format_csv(orientation_weight),
                 format_csv(vision_error_deg),
                 orientation_position_relationship,
                 format_csv(orientation_contribution_pct),
@@ -907,23 +923,58 @@ def calculate_position_component_deg(position_error_px: float | None) -> float |
 def calculate_combined_vision_error_deg(
     orientation_deg: float | None,
     position_component_deg: float | None,
+    orientation_weight: float | None = None,
 ) -> float | None:
     """
-    Calculate a diagnostic combined vision error.
-
-    This value is logged only. Current steering remains orientation-only.
+    Calculate the adaptive combined vision error.
 
     Args:
         orientation_deg: AprilTag orientation in degrees.
-        position_component_deg: Diagnostic position component in degrees.
+        position_component_deg: Position component in degrees.
+        orientation_weight: Adaptive orientation weight.
 
     Returns:
-        Combined orientation plus position component, or None.
+        Position component plus weighted orientation, or None.
     """
     if orientation_deg is None:
         return None
 
-    return orientation_deg + (position_component_deg or 0.0)
+    return (position_component_deg or 0.0) + (
+        (orientation_weight if orientation_weight is not None else 1.0)
+        * orientation_deg
+    )
+
+
+def calculate_position_weight(position_error_px: float | None) -> float | None:
+    """
+    Calculate adaptive position weight from horizontal tag offset.
+
+    Args:
+        position_error_px: Tag center minus image center in pixels.
+
+    Returns:
+        Position weight in the range 0.0..1.0, or None.
+    """
+    if position_error_px is None:
+        return None
+
+    return min(abs(position_error_px) / 100.0, 1.0)
+
+
+def calculate_orientation_weight(position_weight: float | None) -> float | None:
+    """
+    Calculate adaptive orientation weight from position weight.
+
+    Args:
+        position_weight: Position weight in the range 0.0..1.0.
+
+    Returns:
+        Orientation weight in the range 0.0..1.0, or None.
+    """
+    if position_weight is None:
+        return None
+
+    return 1.0 - position_weight
 
 
 def calculate_orientation_position_relationship(
@@ -1109,6 +1160,8 @@ def draw_overlay(
     detection_time_ms: float,
     tag_visible: bool,
     position_component_deg: float | None,
+    position_weight: float | None,
+    orientation_weight: float | None,
     vision_error_deg: float | None,
     orientation_position_relationship: str,
     orientation_contribution_pct: float | None,
@@ -1138,6 +1191,8 @@ def draw_overlay(
         detection_time_ms: Latest detection update time.
         tag_visible: True when a tag is visible.
         position_component_deg: Shadow position correction component.
+        position_weight: Adaptive position weight.
+        orientation_weight: Adaptive orientation weight.
         vision_error_deg: Shadow combined vision error.
         orientation_position_relationship: Direction relationship between components.
         orientation_contribution_pct: Orientation share of combined magnitude.
@@ -1217,6 +1272,8 @@ def draw_overlay(
         ("Tag Orientation", format_display(measurement.orientation_deg, " deg", signed=True)),
         ("Position Error X", format_display(measurement.position_error_x, " px", decimals=0, signed=True)),
         ("Position Component", format_display(position_component_deg, " deg", signed=True)),
+        ("Position Weight", format_display(position_weight)),
+        ("Orientation Weight", format_display(orientation_weight)),
         ("Vision Error Shadow", format_display(vision_error_deg, " deg", signed=True)),
         ("Vision Relationship", orientation_position_relationship),
         ("Orient Contribution", format_display(orientation_contribution_pct, " %")),
@@ -1274,6 +1331,8 @@ def log_terminal(
     orientation_deg: float | None,
     position_error_px: float | None,
     position_component_deg: float | None,
+    position_weight: float | None,
+    orientation_weight: float | None,
     vision_error_deg: float | None,
     orientation_position_relationship: str,
     orientation_contribution_pct: float | None,
@@ -1302,6 +1361,8 @@ def log_terminal(
         orientation_deg: Latest tag orientation.
         position_error_px: Latest tag horizontal position error.
         position_component_deg: Shadow position correction component.
+        position_weight: Adaptive position weight.
+        orientation_weight: Adaptive orientation weight.
         vision_error_deg: Shadow combined vision error.
         orientation_position_relationship: Direction relationship between components.
         orientation_contribution_pct: Orientation share of combined magnitude.
@@ -1326,6 +1387,8 @@ def log_terminal(
     print("Orientation Deg:", format_display(orientation_deg, " deg", signed=True))
     print("Position Error PX:", format_display(position_error_px, " px", decimals=0, signed=True))
     print("Position Component:", format_display(position_component_deg, " deg", signed=True))
+    print("Position Weight:", format_display(position_weight))
+    print("Orientation Weight:", format_display(orientation_weight))
     print("Vision Error Shadow:", format_display(vision_error_deg, " deg", signed=True))
     print("Orientation/Position Relationship:", orientation_position_relationship)
     print("Orientation Contribution:", format_display(orientation_contribution_pct, " %"))
@@ -1892,6 +1955,8 @@ def log_navigation_event(
     tag_orientation_deg: float | None,
     position_error_px: float | None,
     position_component_deg: float | None,
+    position_weight: float | None,
+    orientation_weight: float | None,
     vision_error_deg: float | None,
     orientation_position_relationship: str,
     orientation_contribution_pct: float | None,
@@ -1913,6 +1978,8 @@ def log_navigation_event(
         tag_orientation_deg: Tag orientation, when available.
         position_error_px: Tag position error, when available.
         position_component_deg: Shadow position correction component.
+        position_weight: Adaptive position weight.
+        orientation_weight: Adaptive orientation weight.
         vision_error_deg: Shadow combined vision error.
         orientation_position_relationship: Direction relationship between components.
         orientation_contribution_pct: Orientation share of combined magnitude.
@@ -1929,6 +1996,8 @@ def log_navigation_event(
     print("orientation_deg:", format_display(tag_orientation_deg, " deg", signed=True))
     print("position_error_px:", format_display(position_error_px, " px", decimals=0, signed=True))
     print("position_component_deg:", format_display(position_component_deg, " deg", signed=True))
+    print("position_weight:", format_display(position_weight))
+    print("orientation_weight:", format_display(orientation_weight))
     print("vision_error_deg:", format_display(vision_error_deg, " deg", signed=True))
     print("orientation_position_relationship:", orientation_position_relationship)
     print(
@@ -1951,6 +2020,8 @@ def log_navigation_event(
         tag_orientation_deg,
         position_error_px,
         position_component_deg,
+        position_weight,
+        orientation_weight,
         vision_error_deg,
         orientation_position_relationship,
         orientation_contribution_pct,
@@ -2077,9 +2148,12 @@ def run_validation(args: argparse.Namespace) -> None:
             position_component_deg = calculate_position_component_deg(
                 measurement.position_error_x,
             )
+            position_weight = calculate_position_weight(measurement.position_error_x)
+            orientation_weight = calculate_orientation_weight(position_weight)
             vision_error_deg = calculate_combined_vision_error_deg(
                 measurement.orientation_deg,
                 position_component_deg,
+                orientation_weight,
             )
             orientation_position_relationship = (
                 calculate_orientation_position_relationship(
@@ -2091,7 +2165,12 @@ def run_validation(args: argparse.Namespace) -> None:
                 orientation_contribution_pct,
                 position_contribution_pct,
             ) = calculate_vision_contribution_percentages(
-                measurement.orientation_deg,
+                (orientation_weight * measurement.orientation_deg)
+                if (
+                    orientation_weight is not None
+                    and measurement.orientation_deg is not None
+                )
+                else measurement.orientation_deg,
                 position_component_deg,
             )
             expected_steering_direction = expected_position_steering_direction(
@@ -2288,9 +2367,16 @@ def run_validation(args: argparse.Namespace) -> None:
                     visible_position_component_deg = calculate_position_component_deg(
                         visible_position_error_px,
                     )
+                    visible_position_weight = calculate_position_weight(
+                        visible_position_error_px,
+                    )
+                    visible_orientation_weight = calculate_orientation_weight(
+                        visible_position_weight,
+                    )
                     visible_vision_error_deg = calculate_combined_vision_error_deg(
                         visible_orientation_deg,
                         visible_position_component_deg,
+                        visible_orientation_weight,
                     )
                     visible_relationship = calculate_orientation_position_relationship(
                         visible_orientation_deg,
@@ -2300,7 +2386,12 @@ def run_validation(args: argparse.Namespace) -> None:
                         visible_orientation_contribution_pct,
                         visible_position_contribution_pct,
                     ) = calculate_vision_contribution_percentages(
-                        visible_orientation_deg,
+                        (visible_orientation_weight * visible_orientation_deg)
+                        if (
+                            visible_orientation_weight is not None
+                            and visible_orientation_deg is not None
+                        )
+                        else visible_orientation_deg,
                         visible_position_component_deg,
                     )
                     visible_expected_direction = expected_steering_direction_from_error(
@@ -2326,6 +2417,8 @@ def run_validation(args: argparse.Namespace) -> None:
                             visible_orientation_deg,
                             visible_position_error_px,
                             visible_position_component_deg,
+                            visible_position_weight,
+                            visible_orientation_weight,
                             visible_vision_error_deg,
                             visible_relationship,
                             visible_orientation_contribution_pct,
@@ -2351,6 +2444,8 @@ def run_validation(args: argparse.Namespace) -> None:
                                 visible_orientation_deg,
                                 visible_position_error_px,
                                 visible_position_component_deg,
+                                visible_position_weight,
+                                visible_orientation_weight,
                                 visible_vision_error_deg,
                                 visible_relationship,
                                 visible_orientation_contribution_pct,
@@ -2376,6 +2471,8 @@ def run_validation(args: argparse.Namespace) -> None:
                                 visible_orientation_deg,
                                 visible_position_error_px,
                                 visible_position_component_deg,
+                                visible_position_weight,
+                                visible_orientation_weight,
                                 visible_vision_error_deg,
                                 visible_relationship,
                                 visible_orientation_contribution_pct,
@@ -2403,6 +2500,8 @@ def run_validation(args: argparse.Namespace) -> None:
                         measurement.orientation_deg,
                         measurement.position_error_x,
                         position_component_deg,
+                        position_weight,
+                        orientation_weight,
                         vision_error_deg,
                         orientation_position_relationship,
                         orientation_contribution_pct,
@@ -2466,6 +2565,8 @@ def run_validation(args: argparse.Namespace) -> None:
                             measurement.orientation_deg,
                             measurement.position_error_x,
                             position_component_deg,
+                            position_weight,
+                            orientation_weight,
                             vision_error_deg,
                             orientation_position_relationship,
                             orientation_contribution_pct,
@@ -2488,6 +2589,8 @@ def run_validation(args: argparse.Namespace) -> None:
                                 measurement.orientation_deg,
                                 measurement.position_error_x,
                                 position_component_deg,
+                                position_weight,
+                                orientation_weight,
                                 vision_error_deg,
                                 orientation_position_relationship,
                                 orientation_contribution_pct,
@@ -2513,6 +2616,8 @@ def run_validation(args: argparse.Namespace) -> None:
                             measurement.orientation_deg,
                             measurement.position_error_x,
                             position_component_deg,
+                            position_weight,
+                            orientation_weight,
                             vision_error_deg,
                             orientation_position_relationship,
                             orientation_contribution_pct,
@@ -2652,6 +2757,8 @@ def run_validation(args: argparse.Namespace) -> None:
                     measurement.orientation_deg,
                     measurement.position_error_x,
                     position_component_deg,
+                    position_weight,
+                    orientation_weight,
                     vision_error_deg,
                     orientation_position_relationship,
                     orientation_contribution_pct,
@@ -2679,6 +2786,8 @@ def run_validation(args: argparse.Namespace) -> None:
                     measurement.orientation_deg,
                     measurement.position_error_x,
                     position_component_deg,
+                    position_weight,
+                    orientation_weight,
                     vision_error_deg,
                     orientation_position_relationship,
                     orientation_contribution_pct,
@@ -2707,6 +2816,8 @@ def run_validation(args: argparse.Namespace) -> None:
                     measurement.detection_time_ms,
                     tag_visible,
                     position_component_deg,
+                    position_weight,
+                    orientation_weight,
                     vision_error_deg,
                     orientation_position_relationship,
                     orientation_contribution_pct,
