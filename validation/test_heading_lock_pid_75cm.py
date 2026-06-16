@@ -53,6 +53,7 @@ MIN_FREQUENCY_HZ = 8000.0
 MAX_FREQUENCY_HZ = 10000.0
 PID_UPDATE_INTERVAL_SEC = 0.05
 VISION_LOST_FRAME_THRESHOLD = 5
+TAG_ACQUISITION_FRAME_THRESHOLD = 3
 
 DEFAULT_TRAVEL_DISTANCE_CM = 150.0
 DEFAULT_WHEEL_DIAMETER_MM = 117.0
@@ -104,6 +105,308 @@ class DistanceEstimate:
         wheel_circumference_mm = 3.141592653589793 * wheel_diameter_mm
         revolutions = average_frequency_hz * delta_time_sec / pulses_per_revolution
         self.travelled_cm += revolutions * wheel_circumference_mm / 10.0
+
+
+@dataclass
+class TagVisibilityStats:
+    """Stores diagnostic visibility statistics for one AprilTag."""
+
+    tag_id: int
+    first_seen_timestamp: float | None = None
+    last_seen_timestamp: float | None = None
+    first_seen_distance_cm: float | None = None
+    last_seen_distance_cm: float | None = None
+    total_frames_visible: int = 0
+    current_visible_streak: int = 0
+    longest_consecutive_visible_frames: int = 0
+    currently_visible: bool = False
+    acquired: bool = False
+    tag_pixel_width: float | None = None
+    tag_pixel_height: float | None = None
+    tag_center_x: float | None = None
+    tag_center_y: float | None = None
+    tag_orientation_deg: float | None = None
+    detection_time_ms: float = 0.0
+    fps: float = 0.0
+
+
+class TagVisibilityLogger:
+    """Writes AprilTag visibility events and summaries."""
+
+    def __init__(self, csv_path: Path) -> None:
+        """
+        Create a fresh tag visibility diagnostics CSV file.
+
+        Args:
+            csv_path: Output CSV path.
+        """
+        self.csv_path = csv_path
+        self.csv_path.parent.mkdir(parents=True, exist_ok=True)
+        self._csv_file = self.csv_path.open("w", newline="")
+        self._writer = csv.writer(self._csv_file)
+        self._writer.writerow(
+            [
+                "event",
+                "tag_id",
+                "timestamp_sec",
+                "distance_cm",
+                "visible_frame_count",
+                "longest_visible_streak",
+                "tag_center_x",
+                "tag_center_y",
+                "tag_orientation_deg",
+                "tag_pixel_width",
+                "tag_pixel_height",
+                "detection_time_ms",
+                "fps",
+                "first_seen_timestamp",
+                "last_seen_timestamp",
+                "first_detection_distance_cm",
+                "last_detection_distance_cm",
+                "total_detections",
+            ]
+        )
+
+    def write_event(
+        self,
+        event_name: str,
+        stats: TagVisibilityStats,
+        timestamp_sec: float,
+        distance_cm: float,
+    ) -> None:
+        """
+        Write one tag visibility event.
+
+        Args:
+            event_name: Event label.
+            stats: Current tag statistics.
+            timestamp_sec: Current run timestamp.
+            distance_cm: Current distance estimate.
+        """
+        print(event_name)
+        print("tag_id:", stats.tag_id)
+        print("distance_cm:", f"{distance_cm:.2f}")
+        print("timestamp:", f"{timestamp_sec:.2f}")
+        print("visible_frame_count:", stats.total_frames_visible)
+        print("longest_visible_streak:", stats.longest_consecutive_visible_frames)
+        print("tag_center_x:", format_display(stats.tag_center_x))
+        print("tag_center_y:", format_display(stats.tag_center_y))
+        print("tag_orientation_deg:", format_display(stats.tag_orientation_deg, " deg", signed=True))
+        print()
+        self._writer.writerow(
+            [
+                event_name,
+                stats.tag_id,
+                format_csv(timestamp_sec),
+                format_csv(distance_cm),
+                stats.total_frames_visible,
+                stats.longest_consecutive_visible_frames,
+                format_csv(stats.tag_center_x),
+                format_csv(stats.tag_center_y),
+                format_csv(stats.tag_orientation_deg),
+                format_csv(stats.tag_pixel_width),
+                format_csv(stats.tag_pixel_height),
+                format_csv(stats.detection_time_ms),
+                format_csv(stats.fps),
+                format_csv(stats.first_seen_timestamp),
+                format_csv(stats.last_seen_timestamp),
+                format_csv(stats.first_seen_distance_cm),
+                format_csv(stats.last_seen_distance_cm),
+                stats.total_frames_visible,
+            ]
+        )
+        self._csv_file.flush()
+
+    def write_summary(self, stats_by_tag: dict[int, TagVisibilityStats]) -> None:
+        """
+        Write final tag visibility summary rows.
+
+        Args:
+            stats_by_tag: All collected tag visibility statistics.
+        """
+        print("==================================================")
+        print("TAG VISIBILITY SUMMARY")
+        print("==================================================")
+        for tag_id in sorted(stats_by_tag):
+            stats = stats_by_tag[tag_id]
+            print(f"Tag {tag_id}:")
+            print("  first seen distance:", format_display(stats.first_seen_distance_cm, " cm"))
+            print("  last seen distance:", format_display(stats.last_seen_distance_cm, " cm"))
+            print("  visible frames:", stats.total_frames_visible)
+            print("  longest streak:", stats.longest_consecutive_visible_frames)
+            print()
+            self._writer.writerow(
+                [
+                    "TAG_SUMMARY",
+                    stats.tag_id,
+                    "",
+                    "",
+                    stats.total_frames_visible,
+                    stats.longest_consecutive_visible_frames,
+                    format_csv(stats.tag_center_x),
+                    format_csv(stats.tag_center_y),
+                    format_csv(stats.tag_orientation_deg),
+                    format_csv(stats.tag_pixel_width),
+                    format_csv(stats.tag_pixel_height),
+                    format_csv(stats.detection_time_ms),
+                    format_csv(stats.fps),
+                    format_csv(stats.first_seen_timestamp),
+                    format_csv(stats.last_seen_timestamp),
+                    format_csv(stats.first_seen_distance_cm),
+                    format_csv(stats.last_seen_distance_cm),
+                    stats.total_frames_visible,
+                ]
+            )
+        self._csv_file.flush()
+
+    def close(self) -> None:
+        """Flush and close the tag visibility CSV log."""
+        self._csv_file.flush()
+        self._csv_file.close()
+
+
+class TagVisibilityTracker:
+    """Tracks per-tag visibility frame counts and acquisition diagnostics."""
+
+    def __init__(
+        self,
+        logger: TagVisibilityLogger,
+        acquisition_frame_threshold: int = TAG_ACQUISITION_FRAME_THRESHOLD,
+    ) -> None:
+        """
+        Create a tag visibility tracker.
+
+        Args:
+            logger: Tag visibility CSV logger.
+            acquisition_frame_threshold: Consecutive frames required for TAG_ACQUIRED.
+        """
+        self.logger = logger
+        self.acquisition_frame_threshold = acquisition_frame_threshold
+        self.stats_by_tag: dict[int, TagVisibilityStats] = {}
+        self._summary_written = False
+
+    def update(
+        self,
+        detections: list[dict],
+        timestamp_sec: float,
+        distance_cm: float,
+        detection_time_ms: float,
+        fps: float,
+    ) -> None:
+        """
+        Update visibility statistics for the current frame.
+
+        Args:
+            detections: Raw AprilTag detections for the current frame.
+            timestamp_sec: Time since run start.
+            distance_cm: Current distance estimate.
+            detection_time_ms: Latest AprilTag processing time.
+            fps: Latest measured FPS.
+        """
+        visible_tag_ids: set[int] = set()
+
+        for detection in detections:
+            tag_id = int(detection["tag_id"])
+            visible_tag_ids.add(tag_id)
+            stats = self.stats_by_tag.setdefault(
+                tag_id,
+                TagVisibilityStats(tag_id=tag_id),
+            )
+            was_visible = stats.currently_visible
+            self._update_visible_stats(
+                stats,
+                detection,
+                timestamp_sec,
+                distance_cm,
+                detection_time_ms,
+                fps,
+            )
+
+            if stats.total_frames_visible == 1:
+                self.logger.write_event(
+                    "TAG_FIRST_SEEN",
+                    stats,
+                    timestamp_sec,
+                    distance_cm,
+                )
+
+            if (
+                not stats.acquired
+                and stats.current_visible_streak >= self.acquisition_frame_threshold
+            ):
+                stats.acquired = True
+                self.logger.write_event(
+                    "TAG_ACQUIRED",
+                    stats,
+                    timestamp_sec,
+                    distance_cm,
+                )
+
+            if not was_visible:
+                stats.currently_visible = True
+
+        for tag_id, stats in self.stats_by_tag.items():
+            if tag_id not in visible_tag_ids and stats.currently_visible:
+                stats.currently_visible = False
+                stats.current_visible_streak = 0
+                self.logger.write_event(
+                    "TAG_LOST",
+                    stats,
+                    timestamp_sec,
+                    distance_cm,
+                )
+
+    def write_summary_once(self) -> None:
+        """Write final tag visibility summary once."""
+        if self._summary_written:
+            return
+
+        self.logger.write_summary(self.stats_by_tag)
+        self._summary_written = True
+
+    def _update_visible_stats(
+        self,
+        stats: TagVisibilityStats,
+        detection: dict,
+        timestamp_sec: float,
+        distance_cm: float,
+        detection_time_ms: float,
+        fps: float,
+    ) -> None:
+        """
+        Update statistics for one visible tag.
+
+        Args:
+            stats: Mutable tag statistics.
+            detection: Raw detection dictionary.
+            timestamp_sec: Current run timestamp.
+            distance_cm: Current distance estimate.
+            detection_time_ms: Latest detector timing.
+            fps: Latest measured FPS.
+        """
+        if stats.first_seen_timestamp is None:
+            stats.first_seen_timestamp = timestamp_sec
+            stats.first_seen_distance_cm = distance_cm
+
+        stats.last_seen_timestamp = timestamp_sec
+        stats.last_seen_distance_cm = distance_cm
+        stats.total_frames_visible += 1
+        stats.current_visible_streak += 1
+        stats.longest_consecutive_visible_frames = max(
+            stats.longest_consecutive_visible_frames,
+            stats.current_visible_streak,
+        )
+        stats.tag_center_x = float(detection["center_x"])
+        stats.tag_center_y = float(detection["center_y"])
+        stats.tag_orientation_deg = detection.get(
+            "orientation_deg",
+            calculate_detection_orientation_deg(detection),
+        )
+        stats.detection_time_ms = detection_time_ms
+        stats.fps = fps
+        stats.tag_pixel_width, stats.tag_pixel_height = calculate_tag_pixel_size(
+            detection,
+        )
 
 
 class PIDDistanceLogger:
@@ -425,6 +728,28 @@ def calculate_detection_orientation_deg(detection: dict | None) -> float | None:
     x1, y1 = corners[1]
     raw_angle_deg = math.degrees(math.atan2(y1 - y0, x1 - x0))
     return ((raw_angle_deg + 90.0) % 180.0) - 90.0
+
+
+def calculate_tag_pixel_size(detection: dict | None) -> tuple[float | None, float | None]:
+    """
+    Calculate a detected tag's bounding-box size in image pixels.
+
+    Args:
+        detection: Raw AprilTag detection dictionary.
+
+    Returns:
+        Pixel width and height, or None values when unavailable.
+    """
+    if detection is None:
+        return None, None
+
+    corners = detection.get("corners", [])
+    if not corners:
+        return None, None
+
+    x_values = [float(corner[0]) for corner in corners]
+    y_values = [float(corner[1]) for corner in corners]
+    return max(x_values) - min(x_values), max(y_values) - min(y_values)
 
 
 def update_perception_compatible(
@@ -1248,7 +1573,15 @@ def run_validation(args: argparse.Namespace) -> None:
     )
     pid_controller = create_pid_controller()
     distance_estimate = DistanceEstimate()
-    logger = PIDDistanceLogger(Path(args.csv).expanduser().resolve())
+    pid_csv_path = Path(args.csv).expanduser().resolve()
+    tag_visibility_csv_path = (
+        Path(args.tag_visibility_csv).expanduser().resolve()
+        if args.tag_visibility_csv is not None
+        else pid_csv_path.with_name(f"{pid_csv_path.stem}_tag_visibility.csv")
+    )
+    logger = PIDDistanceLogger(pid_csv_path)
+    tag_visibility_logger = TagVisibilityLogger(tag_visibility_csv_path)
+    tag_visibility_tracker = TagVisibilityTracker(tag_visibility_logger)
 
     state = "WAIT_FOR_TAG1"
     current_command = "NONE"
@@ -1283,10 +1616,12 @@ def run_validation(args: argparse.Namespace) -> None:
     if not perception_manager.initialize():
         print("PerceptionManager failed to initialize camera.")
         logger.close()
+        tag_visibility_logger.close()
         return
 
     if not serial_controller.connect():
         logger.close()
+        tag_visibility_logger.close()
         perception_manager.release()
         return
 
@@ -1677,6 +2012,13 @@ def run_validation(args: argparse.Namespace) -> None:
                 )
 
             startup_phase = "RUNTIME" if movement_start_time is not None else "STARTUP"
+            tag_visibility_tracker.update(
+                detections,
+                elapsed_time_sec,
+                distance_estimate.travelled_cm,
+                measurement.detection_time_ms,
+                measurement.fps,
+            )
 
             if (now - last_csv_time) >= args.csv_interval:
                 logger.write(
@@ -1744,8 +2086,10 @@ def run_validation(args: argparse.Namespace) -> None:
     except KeyboardInterrupt:
         print("Stopping PID heading validation.")
     finally:
+        tag_visibility_tracker.write_summary_once()
         transmit_command(serial_controller, "STOP", start_time, movement_start_time)
         logger.close()
+        tag_visibility_logger.close()
         serial_controller.disconnect()
         perception_manager.release()
         cv2.destroyAllWindows()
@@ -1764,6 +2108,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wheel-diameter-mm", type=float, default=DEFAULT_WHEEL_DIAMETER_MM)
     parser.add_argument("--pulses-per-revolution", type=int, default=DEFAULT_PULSES_PER_REVOLUTION)
     parser.add_argument("--csv", default="validation/heading_lock_pid_75cm_log.csv")
+    parser.add_argument(
+        "--tag-visibility-csv",
+        default=None,
+        help="CSV file for per-tag visibility diagnostics.",
+    )
     parser.add_argument("--csv-interval", type=float, default=0.1)
     parser.add_argument("--log-interval", type=float, default=0.25)
     return parser.parse_args()
