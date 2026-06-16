@@ -815,10 +815,11 @@ def get_startup_wait_reason(
         return "Vision gate ready, waiting to send CALIBRATE_IMU"
 
     if state == "CALIBRATE_IMU":
-        if not imu_ready_received:
-            return f"Waiting for IMU_READY, status={imu_status}"
         if current_heading_deg is None:
-            return "IMU_READY received, waiting for HEADING value"
+            return (
+                "Waiting for HEADING value after CALIBRATE_IMU; "
+                f"IMU_READY seen={imu_ready_received}, status={imu_status}"
+            )
         return "Calibration complete, waiting for heading capture transition"
 
     if state == "HEADING_HOLD_75CM":
@@ -856,9 +857,7 @@ def build_startup_conditions(
     condition_vision_gate_passed = (
         gate_status is not None and gate_status.status_text == "READY_TO_MOVE"
     )
-    condition_calibration_complete = (
-        condition_imu_ready and condition_heading_available
-    )
+    condition_calibration_complete = condition_heading_available
 
     return {
         "condition_tag_visible": condition_tag_visible,
@@ -898,7 +897,6 @@ def first_failed_startup_condition(
             "condition_vision_gate_passed",
         ],
         "CALIBRATE_IMU": [
-            "condition_imu_ready",
             "condition_heading_available",
             "condition_calibration_complete",
         ],
@@ -960,7 +958,7 @@ def log_startup_diagnostics(
     Args:
         state: Current startup/navigation state.
         startup_lock_count: Number of one-second startup diagnostic samples.
-        calibration_complete: True when IMU_READY and heading are available.
+        calibration_complete: True when a valid heading is available.
         navigation_authority: Current navigation authority.
         reason_startup_waiting: Human-readable wait reason.
         startup_conditions: Individual startup booleans.
@@ -982,6 +980,7 @@ def log_startup_diagnostics(
     print("current_heading_deg:", format_display(current_heading_deg, " deg", signed=True))
     print("reference_heading_deg:", format_display(reference_heading_deg, " deg", signed=True))
     print("calibration_complete:", calibration_complete)
+    print("calibration_rule:", "current_heading_deg is not None")
     print("navigation_authority:", navigation_authority)
     print("reason_startup_waiting:", reason_startup_waiting)
     for condition_name, condition_value in startup_conditions.items():
@@ -1334,9 +1333,7 @@ def run_validation(args: argparse.Namespace) -> None:
 
             key = cv2.waitKey(1) & 0xFF
             startup_phase = "RUNTIME" if movement_start_time is not None else "STARTUP"
-            calibration_complete = (
-                imu_ready_received and current_heading_deg is not None
-            )
+            calibration_complete = current_heading_deg is not None
             startup_conditions = build_startup_conditions(
                 measurement,
                 gate_status,
