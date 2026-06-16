@@ -54,7 +54,8 @@ MAX_FREQUENCY_HZ = 10000.0
 PID_UPDATE_INTERVAL_SEC = 0.05
 VISION_LOST_FRAME_THRESHOLD = 5
 TAG_ACQUISITION_FRAME_THRESHOLD = 3
-VISION_POSITION_GAIN_DEG_PER_PX = 0.01
+POSITION_GAIN = 0.01
+VISION_POSITION_GAIN_DEG_PER_PX = POSITION_GAIN
 VISION_POSITION_COMPONENT_LIMIT_DEG = 3.0
 
 DEFAULT_TRAVEL_DISTANCE_CM = 150.0
@@ -1093,6 +1094,8 @@ def log_terminal(
     detection_time_ms: float,
     tag_visible: bool,
     tag_id: int | None,
+    image_center_x: float | None,
+    tag_center_x: float | None,
     orientation_deg: float | None,
     position_error_px: float | None,
     position_component_deg: float | None,
@@ -1116,6 +1119,8 @@ def log_terminal(
         detection_time_ms: Latest detection update time.
         tag_visible: True when a tag is visible.
         tag_id: Latest visible tag ID.
+        image_center_x: Image center x coordinate.
+        tag_center_x: Tag center x coordinate.
         orientation_deg: Latest tag orientation.
         position_error_px: Latest tag horizontal position error.
         position_component_deg: Shadow position correction component.
@@ -1135,6 +1140,8 @@ def log_terminal(
     print("Detection Time:", f"{detection_time_ms:.1f} ms")
     print("Tag Visible:", "YES" if tag_visible else "NO")
     print("Tag ID:", tag_id if tag_id is not None else "None")
+    print("Image Center X:", format_display(image_center_x, " px", decimals=0))
+    print("Tag Center X:", format_display(tag_center_x, " px", decimals=0))
     print("Orientation Deg:", format_display(orientation_deg, " deg", signed=True))
     print("Position Error PX:", format_display(position_error_px, " px", decimals=0, signed=True))
     print("Position Component:", format_display(position_component_deg, " deg", signed=True))
@@ -1188,6 +1195,12 @@ def print_processing_startup_summary(
     print(f"Target FPS: {target_fps:.1f}")
     print(f"Actual FPS: {fps:.1f}")
     print(f"Detection Time: {detection_time_ms:.1f} ms")
+    print(f"Image Center X: {frame_width / 2:.1f}")
+    print(f"POSITION_GAIN: {POSITION_GAIN:.4f} deg/px")
+    print(
+        "Position Component Clamp:",
+        f"-{VISION_POSITION_COMPONENT_LIMIT_DEG:.1f}..+{VISION_POSITION_COMPONENT_LIMIT_DEG:.1f} deg",
+    )
     print()
 
 
@@ -2169,6 +2182,8 @@ def run_validation(args: argparse.Namespace) -> None:
                     measurement.detection_time_ms,
                     tag_visible,
                     measurement.tag_id,
+                    measurement.image_center_x,
+                    measurement.tag_center_x,
                     measurement.orientation_deg,
                     measurement.position_error_x,
                     position_component_deg,
