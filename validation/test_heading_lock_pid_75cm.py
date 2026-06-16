@@ -464,6 +464,14 @@ class PIDDistanceLogger:
                 "avg_pid_output",
                 "correction_count",
                 "runtime_sec",
+                "image_center_x",
+                "tag_center_x",
+                "orientation_deg",
+                "expected_position_steering_direction",
+                "max_abs_position_error_px",
+                "avg_abs_position_error_px",
+                "max_abs_position_component_deg",
+                "max_abs_vision_error_deg",
             ]
         )
 
@@ -480,10 +488,13 @@ class PIDDistanceLogger:
         detection_time_ms: float,
         tag_visible: bool,
         tag_id: int | None,
+        image_center_x: float | None,
+        tag_center_x: float | None,
         tag_orientation_deg: float | None,
         position_error_px: float | None,
         position_component_deg: float | None,
         vision_error_deg: float | None,
+        expected_position_steering_direction: str,
         pid_result: PIDResult | None,
     ) -> None:
         """
@@ -501,10 +512,13 @@ class PIDDistanceLogger:
             detection_time_ms: Latest detection update time.
             tag_visible: True when a tag is visible.
             tag_id: Latest visible tag ID.
+            image_center_x: Image center x coordinate.
+            tag_center_x: Tag center x coordinate.
             tag_orientation_deg: Latest tag orientation.
             position_error_px: Latest horizontal position error.
             position_component_deg: Shadow position correction component.
             vision_error_deg: Shadow combined vision error.
+            expected_position_steering_direction: Expected steering from tag position.
             pid_result: Latest PID calculation.
         """
         self._writer.writerow(
@@ -541,6 +555,14 @@ class PIDDistanceLogger:
                 "",
                 "",
                 "",
+                "",
+                "",
+                "",
+                "",
+                format_csv(image_center_x),
+                format_csv(tag_center_x),
+                format_csv(tag_orientation_deg),
+                expected_position_steering_direction,
                 "",
                 "",
                 "",
@@ -596,6 +618,14 @@ class PIDDistanceLogger:
                 format_csv(summary.get("avg_pid_output")),
                 summary.get("correction_count", ""),
                 format_csv(summary.get("runtime_sec")),
+                "",
+                "",
+                "",
+                "",
+                format_csv(summary.get("max_abs_position_error_px")),
+                format_csv(summary.get("avg_abs_position_error_px")),
+                format_csv(summary.get("max_abs_position_component_deg")),
+                format_csv(summary.get("max_abs_vision_error_deg")),
             ]
         )
         self._csv_file.flush()
@@ -606,8 +636,13 @@ class PIDDistanceLogger:
         timestamp_sec: float,
         distance_travelled_cm: float,
         tag_id: int | None,
+        image_center_x: float | None,
+        tag_center_x: float | None,
         tag_orientation_deg: float | None,
         position_error_px: float | None,
+        position_component_deg: float | None,
+        vision_error_deg: float | None,
+        expected_position_steering_direction: str,
         navigation_authority: str,
     ) -> None:
         """
@@ -618,8 +653,13 @@ class PIDDistanceLogger:
             timestamp_sec: Time since program start.
             distance_travelled_cm: Estimated distance travelled.
             tag_id: Visible tag ID, when available.
+            image_center_x: Image center x coordinate.
+            tag_center_x: Tag center x coordinate.
             tag_orientation_deg: Visible tag orientation, when available.
             position_error_px: Visible tag position error, when available.
+            position_component_deg: Shadow position correction component.
+            vision_error_deg: Shadow combined vision error.
+            expected_position_steering_direction: Expected steering from tag position.
             navigation_authority: Current navigation authority.
         """
         self._writer.writerow(
@@ -638,6 +678,8 @@ class PIDDistanceLogger:
                 tag_id if tag_id is not None else "",
                 format_csv(tag_orientation_deg),
                 format_csv(position_error_px),
+                format_csv(position_component_deg),
+                format_csv(vision_error_deg),
                 "",
                 "",
                 "",
@@ -656,6 +698,12 @@ class PIDDistanceLogger:
                 "",
                 "",
                 "",
+                "",
+                "",
+                format_csv(image_center_x),
+                format_csv(tag_center_x),
+                format_csv(tag_orientation_deg),
+                expected_position_steering_direction,
                 "",
                 "",
                 "",
@@ -1201,6 +1249,7 @@ def print_processing_startup_summary(
         "Position Component Clamp:",
         f"-{VISION_POSITION_COMPONENT_LIMIT_DEG:.1f}..+{VISION_POSITION_COMPONENT_LIMIT_DEG:.1f} deg",
     )
+    print("CSV_POSITION_DIAGNOSTICS_ENABLED: YES")
     print()
 
 
@@ -1454,6 +1503,9 @@ def calculate_run_summary(
     left_frequency_samples: list[float],
     right_frequency_samples: list[float],
     current_heading_samples: list[float],
+    position_error_samples: list[float],
+    position_component_samples: list[float],
+    vision_error_samples: list[float],
     reference_heading_deg: float | None,
     target_distance_cm: float,
     actual_distance_cm: float,
@@ -1468,6 +1520,9 @@ def calculate_run_summary(
         left_frequency_samples: Left frequency samples from the run.
         right_frequency_samples: Right frequency samples from the run.
         current_heading_samples: Current heading samples from the run.
+        position_error_samples: Visible-tag position error samples.
+        position_component_samples: Shadow position component samples.
+        vision_error_samples: Shadow combined vision error samples.
         reference_heading_deg: Stored navigation heading reference.
         target_distance_cm: Commanded travel distance.
         actual_distance_cm: Estimated actual travel distance.
@@ -1497,9 +1552,18 @@ def calculate_run_summary(
             "min_right_frequency_hz": None,
             "correction_count": 0,
             "runtime_sec": runtime_sec,
+            "max_abs_position_error_px": None,
+            "avg_abs_position_error_px": None,
+            "max_abs_position_component_deg": None,
+            "max_abs_vision_error_deg": None,
         }
 
     absolute_errors = [abs(error) for error in heading_error_samples]
+    absolute_position_errors = [abs(error) for error in position_error_samples]
+    absolute_position_components = [
+        abs(component) for component in position_component_samples
+    ]
+    absolute_vision_errors = [abs(error) for error in vision_error_samples]
 
     return {
         "target_distance_cm": target_distance_cm,
@@ -1533,6 +1597,20 @@ def calculate_run_summary(
             1 for pid_output in pid_output_samples if abs(pid_output) > 0.0
         ),
         "runtime_sec": runtime_sec,
+        "max_abs_position_error_px": max(absolute_position_errors)
+        if absolute_position_errors
+        else None,
+        "avg_abs_position_error_px": (
+            sum(absolute_position_errors) / len(absolute_position_errors)
+        )
+        if absolute_position_errors
+        else None,
+        "max_abs_position_component_deg": max(absolute_position_components)
+        if absolute_position_components
+        else None,
+        "max_abs_vision_error_deg": max(absolute_vision_errors)
+        if absolute_vision_errors
+        else None,
     }
 
 
@@ -1573,6 +1651,23 @@ def print_run_summary(summary: dict[str, float | int | None]) -> None:
     print()
     print("PID Corrections Applied:", summary["correction_count"])
     print()
+    print(
+        "Maximum Abs Position Error:",
+        format_display(summary["max_abs_position_error_px"], " px", decimals=0),
+    )
+    print(
+        "Average Abs Position Error:",
+        format_display(summary["avg_abs_position_error_px"], " px", decimals=0),
+    )
+    print(
+        "Maximum Abs Position Component:",
+        format_display(summary["max_abs_position_component_deg"], " deg"),
+    )
+    print(
+        "Maximum Abs Vision Error:",
+        format_display(summary["max_abs_vision_error_deg"], " deg"),
+    )
+    print()
     print("Total Runtime:", f"{summary['runtime_sec']:.2f} sec")
     print()
     print("==================================================")
@@ -1586,6 +1681,9 @@ def finalize_run_summary(
     left_frequency_samples: list[float],
     right_frequency_samples: list[float],
     current_heading_samples: list[float],
+    position_error_samples: list[float],
+    position_component_samples: list[float],
+    vision_error_samples: list[float],
     reference_heading_deg: float | None,
     target_distance_cm: float,
     actual_distance_cm: float,
@@ -1603,6 +1701,9 @@ def finalize_run_summary(
         left_frequency_samples: Left wheel frequency samples.
         right_frequency_samples: Right wheel frequency samples.
         current_heading_samples: Current heading samples.
+        position_error_samples: Visible-tag position error samples.
+        position_component_samples: Shadow position component samples.
+        vision_error_samples: Shadow combined vision error samples.
         reference_heading_deg: Stored navigation heading reference.
         target_distance_cm: Commanded travel distance.
         actual_distance_cm: Estimated distance travelled.
@@ -1626,6 +1727,9 @@ def finalize_run_summary(
         left_frequency_samples,
         right_frequency_samples,
         current_heading_samples,
+        position_error_samples,
+        position_component_samples,
+        vision_error_samples,
         reference_heading_deg,
         target_distance_cm,
         actual_distance_cm,
@@ -1642,8 +1746,13 @@ def log_navigation_event(
     tag_id: int | None,
     distance_cm: float,
     timestamp_sec: float,
+    image_center_x: float | None,
+    tag_center_x: float | None,
     tag_orientation_deg: float | None,
     position_error_px: float | None,
+    position_component_deg: float | None,
+    vision_error_deg: float | None,
+    expected_position_steering_direction: str,
     navigation_authority: str,
 ) -> None:
     """
@@ -1655,22 +1764,39 @@ def log_navigation_event(
         tag_id: Visible tag ID.
         distance_cm: Estimated distance travelled.
         timestamp_sec: Time since program start.
+        image_center_x: Image center x coordinate.
+        tag_center_x: Tag center x coordinate.
         tag_orientation_deg: Tag orientation, when available.
         position_error_px: Tag position error, when available.
+        position_component_deg: Shadow position correction component.
+        vision_error_deg: Shadow combined vision error.
+        expected_position_steering_direction: Expected steering from tag position.
         navigation_authority: Current navigation authority.
     """
     print(event_name)
     print("tag_id:", tag_id if tag_id is not None else "None")
     print("distance_cm:", f"{distance_cm:.2f}")
     print("timestamp:", f"{timestamp_sec:.2f}")
+    print("image_center_x:", format_display(image_center_x, " px", decimals=0))
+    print("tag_center_x:", format_display(tag_center_x, " px", decimals=0))
+    print("orientation_deg:", format_display(tag_orientation_deg, " deg", signed=True))
+    print("position_error_px:", format_display(position_error_px, " px", decimals=0, signed=True))
+    print("position_component_deg:", format_display(position_component_deg, " deg", signed=True))
+    print("vision_error_deg:", format_display(vision_error_deg, " deg", signed=True))
+    print("expected_position_steering_direction:", expected_position_steering_direction)
     print()
     logger.write_event(
         event_name,
         timestamp_sec,
         distance_cm,
         tag_id,
+        image_center_x,
+        tag_center_x,
         tag_orientation_deg,
         position_error_px,
+        position_component_deg,
+        vision_error_deg,
+        expected_position_steering_direction,
         navigation_authority,
     )
 
@@ -1717,6 +1843,9 @@ def run_validation(args: argparse.Namespace) -> None:
     last_vision_error_deg: float | None = None
     startup_tag1_orientation_deg: float | None = None
     last_logged_tag_id: int | None = None
+    vision_analysis_logged_tag_id: int | None = None
+    large_position_error_logged_tag_id: int | None = None
+    extreme_position_error_logged_tag_id: int | None = None
     vision_authority_tag_id: int | None = None
     summary_printed = False
     processing_summary_printed = False
@@ -1729,6 +1858,9 @@ def run_validation(args: argparse.Namespace) -> None:
     left_frequency_samples: list[float] = []
     right_frequency_samples: list[float] = []
     current_heading_samples: list[float] = []
+    position_error_samples: list[float] = []
+    position_component_samples: list[float] = []
+    vision_error_samples: list[float] = []
 
     if not perception_manager.initialize():
         print("PerceptionManager failed to initialize camera.")
@@ -1857,6 +1989,9 @@ def run_validation(args: argparse.Namespace) -> None:
                     left_frequency_samples,
                     right_frequency_samples,
                     current_heading_samples,
+                    position_error_samples,
+                    position_component_samples,
+                    vision_error_samples,
                     navigation_reference_heading_deg,
                     args.travel_distance_cm,
                     distance_estimate.travelled_cm,
@@ -1972,14 +2107,83 @@ def run_validation(args: argparse.Namespace) -> None:
                         measurement.tag_id,
                         distance_estimate.travelled_cm,
                         elapsed_time_sec,
+                        measurement.image_center_x,
+                        measurement.tag_center_x,
                         measurement.orientation_deg,
                         measurement.position_error_x,
+                        position_component_deg,
+                        vision_error_deg,
+                        expected_steering_direction,
+                        navigation_authority,
+                    )
+                    log_navigation_event(
+                        logger,
+                        "TAG_VISION_ANALYSIS",
+                        measurement.tag_id,
+                        distance_estimate.travelled_cm,
+                        elapsed_time_sec,
+                        measurement.image_center_x,
+                        measurement.tag_center_x,
+                        measurement.orientation_deg,
+                        measurement.position_error_x,
+                        position_component_deg,
+                        vision_error_deg,
+                        expected_steering_direction,
                         navigation_authority,
                     )
                     last_logged_tag_id = measurement.tag_id
+                    vision_analysis_logged_tag_id = measurement.tag_id
+                    large_position_error_logged_tag_id = None
+                    extreme_position_error_logged_tag_id = None
 
                 if not tag_visible:
                     last_logged_tag_id = None
+                    vision_analysis_logged_tag_id = None
+                    large_position_error_logged_tag_id = None
+                    extreme_position_error_logged_tag_id = None
+
+                if tag_visible and measurement.position_error_x is not None:
+                    if (
+                        abs(measurement.position_error_x) > 75.0
+                        and large_position_error_logged_tag_id != measurement.tag_id
+                    ):
+                        log_navigation_event(
+                            logger,
+                            "LARGE_POSITION_ERROR",
+                            measurement.tag_id,
+                            distance_estimate.travelled_cm,
+                            elapsed_time_sec,
+                            measurement.image_center_x,
+                            measurement.tag_center_x,
+                            measurement.orientation_deg,
+                            measurement.position_error_x,
+                            position_component_deg,
+                            vision_error_deg,
+                            expected_steering_direction,
+                            navigation_authority,
+                        )
+                        large_position_error_logged_tag_id = measurement.tag_id
+
+                    if (
+                        abs(measurement.position_error_x) > 150.0
+                        and extreme_position_error_logged_tag_id != measurement.tag_id
+                    ):
+                        log_navigation_event(
+                            logger,
+                            "EXTREME_POSITION_ERROR",
+                            measurement.tag_id,
+                            distance_estimate.travelled_cm,
+                            elapsed_time_sec,
+                            measurement.image_center_x,
+                            measurement.tag_center_x,
+                            measurement.orientation_deg,
+                            measurement.position_error_x,
+                            position_component_deg,
+                            vision_error_deg,
+                            expected_steering_direction,
+                            navigation_authority,
+                        )
+                        extreme_position_error_logged_tag_id = measurement.tag_id
 
                 tag_has_valid_orientation = (
                     tag_visible and measurement.orientation_deg is not None
@@ -2024,13 +2228,18 @@ def run_validation(args: argparse.Namespace) -> None:
                         log_navigation_event(
                             logger,
                             "VISION_AUTHORITY_ENTERED",
-                            measurement.tag_id,
-                            distance_estimate.travelled_cm,
-                            elapsed_time_sec,
-                            measurement.orientation_deg,
-                            measurement.position_error_x,
-                            selected_authority,
-                        )
+                                measurement.tag_id,
+                                distance_estimate.travelled_cm,
+                                elapsed_time_sec,
+                                measurement.image_center_x,
+                                measurement.tag_center_x,
+                                measurement.orientation_deg,
+                                measurement.position_error_x,
+                                position_component_deg,
+                                vision_error_deg,
+                                expected_steering_direction,
+                                selected_authority,
+                            )
                         vision_authority_tag_id = measurement.tag_id
 
                     if (
@@ -2040,13 +2249,18 @@ def run_validation(args: argparse.Namespace) -> None:
                         log_navigation_event(
                             logger,
                             "VISION_AUTHORITY_EXITED",
-                            vision_authority_tag_id,
-                            distance_estimate.travelled_cm,
-                            elapsed_time_sec,
-                            measurement.orientation_deg,
-                            measurement.position_error_x,
-                            navigation_authority,
-                        )
+                                vision_authority_tag_id,
+                                distance_estimate.travelled_cm,
+                                elapsed_time_sec,
+                                measurement.image_center_x,
+                                measurement.tag_center_x,
+                                measurement.orientation_deg,
+                                measurement.position_error_x,
+                                position_component_deg,
+                                vision_error_deg,
+                                expected_steering_direction,
+                                navigation_authority,
+                            )
                         vision_authority_tag_id = None
                         last_vision_error_deg = None
 
@@ -2069,6 +2283,9 @@ def run_validation(args: argparse.Namespace) -> None:
                         left_frequency_samples,
                         right_frequency_samples,
                         current_heading_samples,
+                        position_error_samples,
+                        position_component_samples,
+                        vision_error_samples,
                         navigation_reference_heading_deg,
                         args.travel_distance_cm,
                         distance_estimate.travelled_cm,
@@ -2130,6 +2347,9 @@ def run_validation(args: argparse.Namespace) -> None:
                     left_frequency_samples,
                     right_frequency_samples,
                     current_heading_samples,
+                    position_error_samples,
+                    position_component_samples,
+                    vision_error_samples,
                     navigation_reference_heading_deg,
                     args.travel_distance_cm,
                     distance_estimate.travelled_cm,
@@ -2138,36 +2358,47 @@ def run_validation(args: argparse.Namespace) -> None:
                     summary_printed,
                 )
 
-            startup_phase = "RUNTIME" if movement_start_time is not None else "STARTUP"
-            tag_visibility_tracker.update(
-                detections,
-                elapsed_time_sec,
-                distance_estimate.travelled_cm,
-                measurement.detection_time_ms,
-                measurement.fps,
-            )
-
-            if (now - last_csv_time) >= args.csv_interval:
-                logger.write(
+                startup_phase = "RUNTIME" if movement_start_time is not None else "STARTUP"
+                tag_visibility_tracker.update(
+                    detections,
                     elapsed_time_sec,
                     distance_estimate.travelled_cm,
+                    measurement.detection_time_ms,
+                    measurement.fps,
+                )
+
+                if tag_visible:
+                    if measurement.position_error_x is not None:
+                        position_error_samples.append(measurement.position_error_x)
+                    if position_component_deg is not None:
+                        position_component_samples.append(position_component_deg)
+                    if vision_error_deg is not None:
+                        vision_error_samples.append(vision_error_deg)
+
+                if (now - last_csv_time) >= args.csv_interval:
+                    logger.write(
+                        elapsed_time_sec,
+                        distance_estimate.travelled_cm,
                     navigation_reference_heading_deg,
                     current_heading_deg,
                     heading_error_deg,
                     navigation_authority,
-                    vision_lost_count,
-                    measurement.fps,
-                    measurement.detection_time_ms,
-                    tag_visible,
-                    measurement.tag_id,
-                    # Same orientation value shown on the OpenCV overlay.
-                    measurement.orientation_deg,
-                    measurement.position_error_x,
-                    position_component_deg,
-                    vision_error_deg,
-                    latest_pid_result,
-                )
-                last_csv_time = now
+                        vision_lost_count,
+                        measurement.fps,
+                        measurement.detection_time_ms,
+                        tag_visible,
+                        measurement.tag_id,
+                        measurement.image_center_x,
+                        measurement.tag_center_x,
+                        # Same orientation value shown on the OpenCV overlay.
+                        measurement.orientation_deg,
+                        measurement.position_error_x,
+                        position_component_deg,
+                        vision_error_deg,
+                        expected_steering_direction,
+                        latest_pid_result,
+                    )
+                    last_csv_time = now
 
             if (now - last_log_time) >= args.log_interval:
                 log_terminal(
