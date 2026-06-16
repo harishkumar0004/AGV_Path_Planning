@@ -827,12 +827,123 @@ def get_startup_wait_reason(
     return "No startup wait"
 
 
+def build_startup_conditions(
+    measurement: PerceptionState,
+    gate_status: StartGateStatus | None,
+    imu_ready_received: bool,
+    current_heading_deg: float | None,
+) -> dict[str, bool]:
+    """
+    Build individual startup condition booleans for diagnostics.
+
+    Args:
+        measurement: Latest perception state.
+        gate_status: Latest vision gate status.
+        imu_ready_received: True after IMU_READY was observed.
+        current_heading_deg: Latest parsed heading.
+
+    Returns:
+        Named startup conditions.
+    """
+    condition_tag_visible = measurement.tag_visible and measurement.tag_id == 1
+    condition_orientation_valid = measurement.orientation_deg is not None
+    condition_position_valid = (
+        measurement.position_error_x is not None
+        and abs(measurement.position_error_x) <= 10.0
+    )
+    condition_imu_ready = imu_ready_received
+    condition_heading_available = current_heading_deg is not None
+    condition_vision_gate_passed = (
+        gate_status is not None and gate_status.status_text == "READY_TO_MOVE"
+    )
+    condition_calibration_complete = (
+        condition_imu_ready and condition_heading_available
+    )
+
+    return {
+        "condition_tag_visible": condition_tag_visible,
+        "condition_orientation_valid": condition_orientation_valid,
+        "condition_position_valid": condition_position_valid,
+        "condition_imu_ready": condition_imu_ready,
+        "condition_heading_available": condition_heading_available,
+        "condition_vision_gate_passed": condition_vision_gate_passed,
+        "condition_calibration_complete": condition_calibration_complete,
+    }
+
+
+def first_failed_startup_condition(
+    state: str,
+    conditions: dict[str, bool],
+) -> str:
+    """
+    Return the first condition currently blocking the active startup state.
+
+    Args:
+        state: Current startup state.
+        conditions: Startup condition dictionary.
+
+    Returns:
+        Blocking condition name, or NONE.
+    """
+    state_conditions = {
+        "WAIT_FOR_TAG1": ["condition_tag_visible"],
+        "ALIGN_TAG1": [
+            "condition_tag_visible",
+            "condition_orientation_valid",
+        ],
+        "VISION_START_GATE": [
+            "condition_tag_visible",
+            "condition_orientation_valid",
+            "condition_position_valid",
+            "condition_vision_gate_passed",
+        ],
+        "CALIBRATE_IMU": [
+            "condition_imu_ready",
+            "condition_heading_available",
+            "condition_calibration_complete",
+        ],
+        "HEADING_HOLD_75CM": [],
+    }
+
+    for condition_name in state_conditions.get(state, []):
+        if not conditions[condition_name]:
+            return condition_name
+
+    return "NONE"
+
+
+def find_source_line(pattern: str) -> int | None:
+    """
+    Find the first source line containing a pattern in this file.
+
+    Args:
+        pattern: Source text to search for.
+
+    Returns:
+        One-based line number, or None if not found.
+    """
+    source_path = Path(__file__)
+    try:
+        for line_number, line_text in enumerate(source_path.read_text().splitlines(), 1):
+            if "find_source_line" in line_text:
+                continue
+            if pattern in line_text:
+                return line_number
+    except OSError:
+        return None
+
+    return None
+
+
 def log_startup_diagnostics(
     state: str,
     startup_lock_count: int,
     calibration_complete: bool,
     navigation_authority: str,
     reason_startup_waiting: str,
+    startup_conditions: dict[str, bool],
+    blocked_condition: str,
+    blocking_line: int | None,
     measurement: PerceptionState,
     gate_status: StartGateStatus | None,
     imu_status: str,
@@ -852,6 +963,9 @@ def log_startup_diagnostics(
         calibration_complete: True when IMU_READY and heading are available.
         navigation_authority: Current navigation authority.
         reason_startup_waiting: Human-readable wait reason.
+        startup_conditions: Individual startup booleans.
+        blocked_condition: First failed condition for the current state.
+        blocking_line: Source line for the active blocking transition.
         measurement: Latest perception state.
         gate_status: Latest vision gate status.
         imu_status: Latest IMU reader status.
@@ -870,6 +984,12 @@ def log_startup_diagnostics(
     print("calibration_complete:", calibration_complete)
     print("navigation_authority:", navigation_authority)
     print("reason_startup_waiting:", reason_startup_waiting)
+    for condition_name, condition_value in startup_conditions.items():
+        print(f"{condition_name}:", condition_value)
+    if blocked_condition != "NONE":
+        print("STARTUP BLOCKED BY:", blocked_condition)
+        if blocking_line is not None:
+            print("BLOCKING LINE:", blocking_line)
     print("imu_status:", imu_status)
     print("last_imu_message:", last_imu_message or "None")
     print("heading_message_count:", heading_message_count)
@@ -1169,7 +1289,7 @@ def run_validation(args: argparse.Namespace) -> None:
         perception_manager.release()
         return
 
-    print("STATE TRANSITION >>> WAIT_FOR_TAG1")
+    print("ENTER WAIT_FOR_TAG1")
 
     try:
         while True:
@@ -1212,6 +1332,19 @@ def run_validation(args: argparse.Namespace) -> None:
             calibration_complete = (
                 imu_ready_received and current_heading_deg is not None
             )
+            startup_conditions = build_startup_conditions(
+                measurement,
+                gate_status,
+                imu_ready_received,
+                current_heading_deg,
+            )
+            blocked_condition = first_failed_startup_condition(
+                state,
+                startup_conditions,
+            )
+            blocking_line = None
+            if state == "CALIBRATE_IMU" and blocked_condition != "NONE":
+                blocking_line = find_source_line("                if calibration_complete:")
 
             if (
                 startup_phase == "STARTUP"
@@ -1235,6 +1368,9 @@ def run_validation(args: argparse.Namespace) -> None:
                     calibration_complete,
                     navigation_authority,
                     reason_startup_waiting,
+                    startup_conditions,
+                    blocked_condition,
+                    blocking_line,
                     measurement,
                     gate_status,
                     imu_reader.latest_status,
@@ -1269,7 +1405,7 @@ def run_validation(args: argparse.Namespace) -> None:
 
             if state == "WAIT_FOR_TAG1" and measurement.tag_id == 1:
                 state = "ALIGN_TAG1"
-                print("STATE TRANSITION >>> ALIGN_TAG1")
+                print("ENTER ALIGN_TAG1")
 
             elif state == "ALIGN_TAG1":
                 alignment_state = choose_initial_orientation_state(
@@ -1292,7 +1428,7 @@ def run_validation(args: argparse.Namespace) -> None:
                     gate_stable_since = None
                     gate_status = None
                     state = "VISION_START_GATE"
-                    print("STATE TRANSITION >>> VISION_START_GATE")
+                    print("ENTER VISION_START_GATE")
 
             elif state == "VISION_START_GATE":
                 gate_status, gate_stable_since = evaluate_start_gate(
@@ -1313,7 +1449,7 @@ def run_validation(args: argparse.Namespace) -> None:
                     imu_ready_received = False
                     navigation_reference_heading_deg = None
                     state = "CALIBRATE_IMU"
-                    print("STATE TRANSITION >>> CALIBRATE_IMU")
+                    print("ENTER CALIBRATE_IMU")
 
             elif state == "CALIBRATE_IMU":
                 if calibration_complete:
@@ -1337,7 +1473,7 @@ def run_validation(args: argparse.Namespace) -> None:
                         ),
                     )
                     state = "HEADING_HOLD_75CM"
-                    print("STATE TRANSITION >>> HEADING_HOLD_75CM")
+                    print("ENTER HEADING_HOLD_75CM")
 
             elif state == "HEADING_HOLD_75CM":
                 distance_estimate.update(
