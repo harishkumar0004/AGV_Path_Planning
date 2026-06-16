@@ -1569,6 +1569,28 @@ def calculate_run_summary(
     Returns:
         Summary values.
     """
+    absolute_position_errors = [abs(error) for error in position_error_samples]
+    absolute_position_components = [
+        abs(component) for component in position_component_samples
+    ]
+    absolute_vision_errors = [abs(error) for error in vision_error_samples]
+    position_summary = {
+        "max_abs_position_error_px": max(absolute_position_errors)
+        if absolute_position_errors
+        else None,
+        "avg_abs_position_error_px": (
+            sum(absolute_position_errors) / len(absolute_position_errors)
+        )
+        if absolute_position_errors
+        else None,
+        "max_abs_position_component_deg": max(absolute_position_components)
+        if absolute_position_components
+        else None,
+        "max_abs_vision_error_deg": max(absolute_vision_errors)
+        if absolute_vision_errors
+        else None,
+    }
+
     if not heading_error_samples:
         return {
             "target_distance_cm": target_distance_cm,
@@ -1590,18 +1612,10 @@ def calculate_run_summary(
             "min_right_frequency_hz": None,
             "correction_count": 0,
             "runtime_sec": runtime_sec,
-            "max_abs_position_error_px": None,
-            "avg_abs_position_error_px": None,
-            "max_abs_position_component_deg": None,
-            "max_abs_vision_error_deg": None,
+            **position_summary,
         }
 
     absolute_errors = [abs(error) for error in heading_error_samples]
-    absolute_position_errors = [abs(error) for error in position_error_samples]
-    absolute_position_components = [
-        abs(component) for component in position_component_samples
-    ]
-    absolute_vision_errors = [abs(error) for error in vision_error_samples]
 
     return {
         "target_distance_cm": target_distance_cm,
@@ -1635,20 +1649,7 @@ def calculate_run_summary(
             1 for pid_output in pid_output_samples if abs(pid_output) > 0.0
         ),
         "runtime_sec": runtime_sec,
-        "max_abs_position_error_px": max(absolute_position_errors)
-        if absolute_position_errors
-        else None,
-        "avg_abs_position_error_px": (
-            sum(absolute_position_errors) / len(absolute_position_errors)
-        )
-        if absolute_position_errors
-        else None,
-        "max_abs_position_component_deg": max(absolute_position_components)
-        if absolute_position_components
-        else None,
-        "max_abs_vision_error_deg": max(absolute_vision_errors)
-        if absolute_vision_errors
-        else None,
+        **position_summary,
     }
 
 
@@ -2162,6 +2163,13 @@ def run_validation(args: argparse.Namespace) -> None:
                         visible_position_error_px,
                     )
 
+                    if visible_position_error_px is not None:
+                        position_error_samples.append(visible_position_error_px)
+                    if visible_position_component_deg is not None:
+                        position_component_samples.append(visible_position_component_deg)
+                    if visible_vision_error_deg is not None:
+                        vision_error_samples.append(visible_vision_error_deg)
+
                     if visible_tag_id not in pid_csv_visible_tag_ids:
                         log_navigation_event(
                             logger,
@@ -2460,15 +2468,7 @@ def run_validation(args: argparse.Namespace) -> None:
                     measurement.fps,
                 )
 
-                if tag_visible:
-                    if measurement.position_error_x is not None:
-                        position_error_samples.append(measurement.position_error_x)
-                    if position_component_deg is not None:
-                        position_component_samples.append(position_component_deg)
-                    if vision_error_deg is not None:
-                        vision_error_samples.append(vision_error_deg)
-
-                if (now - last_csv_time) >= args.csv_interval:
+            if (now - last_csv_time) >= args.csv_interval:
                     logger.write(
                         elapsed_time_sec,
                         distance_estimate.travelled_cm,
