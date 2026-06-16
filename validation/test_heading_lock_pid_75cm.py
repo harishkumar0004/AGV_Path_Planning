@@ -57,6 +57,7 @@ TAG_ACQUISITION_FRAME_THRESHOLD = 3
 POSITION_GAIN = 0.01
 VISION_POSITION_GAIN_DEG_PER_PX = POSITION_GAIN
 VISION_POSITION_COMPONENT_LIMIT_DEG = 3.0
+ENABLE_POSITION_ASSISTED_VISION = True
 
 DEFAULT_TRAVEL_DISTANCE_CM = 150.0
 DEFAULT_WHEEL_DIAMETER_MM = 117.0
@@ -793,6 +794,48 @@ def calculate_detection_orientation_deg(detection: dict | None) -> float | None:
     return ((raw_angle_deg + 90.0) % 180.0) - 90.0
 
 
+def get_detection_position_error_px(
+    detection: dict,
+    image_center_x: float | None,
+) -> float | None:
+    """
+    Calculate one detection's horizontal position error.
+
+    Args:
+        detection: Raw AprilTag detection dictionary.
+        image_center_x: Image center x coordinate.
+
+    Returns:
+        Tag center minus image center, or None.
+    """
+    if image_center_x is None:
+        return None
+
+    return float(detection["center_x"]) - image_center_x
+
+
+def expected_steering_direction_from_error(position_error_px: float | None) -> str:
+    """
+    Describe the expected steering direction from a position error value.
+
+    Args:
+        position_error_px: Tag center minus image center in pixels.
+
+    Returns:
+        Human-readable expected steering direction.
+    """
+    if position_error_px is None:
+        return "None"
+
+    if position_error_px > 0:
+        return "RIGHT"
+
+    if position_error_px < 0:
+        return "LEFT"
+
+    return "CENTERED"
+
+
 def calculate_tag_pixel_size(detection: dict | None) -> tuple[float | None, float | None]:
     """
     Calculate a detected tag's bounding-box size in image pixels.
@@ -869,16 +912,7 @@ def expected_position_steering_direction(position_error_px: float | None) -> str
     Returns:
         Human-readable expected steering direction.
     """
-    if position_error_px is None:
-        return "None"
-
-    if position_error_px > 0:
-        return "RIGHT"
-
-    if position_error_px < 0:
-        return "LEFT"
-
-    return "CENTERED"
+    return expected_steering_direction_from_error(position_error_px)
 
 
 def update_perception_compatible(
@@ -1248,6 +1282,10 @@ def print_processing_startup_summary(
     print(
         "Position Component Clamp:",
         f"-{VISION_POSITION_COMPONENT_LIMIT_DEG:.1f}..+{VISION_POSITION_COMPONENT_LIMIT_DEG:.1f} deg",
+    )
+    print(
+        "ENABLE_POSITION_ASSISTED_VISION:",
+        "YES" if ENABLE_POSITION_ASSISTED_VISION else "NO",
     )
     print("CSV_POSITION_DIAGNOSTICS_ENABLED: YES")
     print()
@@ -1843,9 +1881,10 @@ def run_validation(args: argparse.Namespace) -> None:
     last_vision_error_deg: float | None = None
     startup_tag1_orientation_deg: float | None = None
     last_logged_tag_id: int | None = None
-    vision_analysis_logged_tag_id: int | None = None
-    large_position_error_logged_tag_id: int | None = None
-    extreme_position_error_logged_tag_id: int | None = None
+    pid_csv_visible_tag_ids: set[int] = set()
+    pid_csv_large_position_error_tag_ids: set[int] = set()
+    pid_csv_extreme_position_error_tag_ids: set[int] = set()
+    position_assisted_vision_logged = False
     vision_authority_tag_id: int | None = None
     summary_printed = False
     processing_summary_printed = False
@@ -2100,6 +2139,97 @@ def run_validation(args: argparse.Namespace) -> None:
                     args.pulses_per_revolution,
                 )
 
+                current_detection_tag_ids: set[int] = set()
+                for visible_detection in detections:
+                    visible_tag_id = int(visible_detection["tag_id"])
+                    current_detection_tag_ids.add(visible_tag_id)
+                    visible_orientation_deg = visible_detection.get(
+                        "orientation_deg",
+                        calculate_detection_orientation_deg(visible_detection),
+                    )
+                    visible_position_error_px = get_detection_position_error_px(
+                        visible_detection,
+                        measurement.image_center_x,
+                    )
+                    visible_position_component_deg = calculate_position_component_deg(
+                        visible_position_error_px,
+                    )
+                    visible_vision_error_deg = calculate_combined_vision_error_deg(
+                        visible_orientation_deg,
+                        visible_position_component_deg,
+                    )
+                    visible_expected_direction = expected_steering_direction_from_error(
+                        visible_position_error_px,
+                    )
+
+                    if visible_tag_id not in pid_csv_visible_tag_ids:
+                        log_navigation_event(
+                            logger,
+                            "TAG_VISION_ANALYSIS",
+                            visible_tag_id,
+                            distance_estimate.travelled_cm,
+                            elapsed_time_sec,
+                            measurement.image_center_x,
+                            float(visible_detection["center_x"]),
+                            visible_orientation_deg,
+                            visible_position_error_px,
+                            visible_position_component_deg,
+                            visible_vision_error_deg,
+                            visible_expected_direction,
+                            navigation_authority,
+                        )
+                        pid_csv_visible_tag_ids.add(visible_tag_id)
+
+                    if visible_position_error_px is not None:
+                        if (
+                            abs(visible_position_error_px) > 75.0
+                            and visible_tag_id not in pid_csv_large_position_error_tag_ids
+                        ):
+                            log_navigation_event(
+                                logger,
+                                "LARGE_POSITION_ERROR",
+                                visible_tag_id,
+                                distance_estimate.travelled_cm,
+                                elapsed_time_sec,
+                                measurement.image_center_x,
+                                float(visible_detection["center_x"]),
+                                visible_orientation_deg,
+                                visible_position_error_px,
+                                visible_position_component_deg,
+                                visible_vision_error_deg,
+                                visible_expected_direction,
+                                navigation_authority,
+                            )
+                            pid_csv_large_position_error_tag_ids.add(visible_tag_id)
+
+                        if (
+                            abs(visible_position_error_px) > 150.0
+                            and visible_tag_id
+                            not in pid_csv_extreme_position_error_tag_ids
+                        ):
+                            log_navigation_event(
+                                logger,
+                                "EXTREME_POSITION_ERROR",
+                                visible_tag_id,
+                                distance_estimate.travelled_cm,
+                                elapsed_time_sec,
+                                measurement.image_center_x,
+                                float(visible_detection["center_x"]),
+                                visible_orientation_deg,
+                                visible_position_error_px,
+                                visible_position_component_deg,
+                                visible_vision_error_deg,
+                                visible_expected_direction,
+                                navigation_authority,
+                            )
+                            pid_csv_extreme_position_error_tag_ids.add(visible_tag_id)
+
+                lost_pid_csv_tag_ids = pid_csv_visible_tag_ids - current_detection_tag_ids
+                if lost_pid_csv_tag_ids:
+                    pid_csv_visible_tag_ids -= lost_pid_csv_tag_ids
+                    pid_csv_large_position_error_tag_ids -= lost_pid_csv_tag_ids
+                    pid_csv_extreme_position_error_tag_ids -= lost_pid_csv_tag_ids
+
                 if tag_visible and measurement.tag_id != last_logged_tag_id:
                     log_navigation_event(
                         logger,
@@ -2116,74 +2246,10 @@ def run_validation(args: argparse.Namespace) -> None:
                         expected_steering_direction,
                         navigation_authority,
                     )
-                    log_navigation_event(
-                        logger,
-                        "TAG_VISION_ANALYSIS",
-                        measurement.tag_id,
-                        distance_estimate.travelled_cm,
-                        elapsed_time_sec,
-                        measurement.image_center_x,
-                        measurement.tag_center_x,
-                        measurement.orientation_deg,
-                        measurement.position_error_x,
-                        position_component_deg,
-                        vision_error_deg,
-                        expected_steering_direction,
-                        navigation_authority,
-                    )
                     last_logged_tag_id = measurement.tag_id
-                    vision_analysis_logged_tag_id = measurement.tag_id
-                    large_position_error_logged_tag_id = None
-                    extreme_position_error_logged_tag_id = None
 
                 if not tag_visible:
                     last_logged_tag_id = None
-                    vision_analysis_logged_tag_id = None
-                    large_position_error_logged_tag_id = None
-                    extreme_position_error_logged_tag_id = None
-
-                if tag_visible and measurement.position_error_x is not None:
-                    if (
-                        abs(measurement.position_error_x) > 75.0
-                        and large_position_error_logged_tag_id != measurement.tag_id
-                    ):
-                        log_navigation_event(
-                            logger,
-                            "LARGE_POSITION_ERROR",
-                            measurement.tag_id,
-                            distance_estimate.travelled_cm,
-                            elapsed_time_sec,
-                            measurement.image_center_x,
-                            measurement.tag_center_x,
-                            measurement.orientation_deg,
-                            measurement.position_error_x,
-                            position_component_deg,
-                            vision_error_deg,
-                            expected_steering_direction,
-                            navigation_authority,
-                        )
-                        large_position_error_logged_tag_id = measurement.tag_id
-
-                    if (
-                        abs(measurement.position_error_x) > 150.0
-                        and extreme_position_error_logged_tag_id != measurement.tag_id
-                    ):
-                        log_navigation_event(
-                            logger,
-                            "EXTREME_POSITION_ERROR",
-                            measurement.tag_id,
-                            distance_estimate.travelled_cm,
-                            elapsed_time_sec,
-                            measurement.image_center_x,
-                            measurement.tag_center_x,
-                            measurement.orientation_deg,
-                            measurement.position_error_x,
-                            position_component_deg,
-                            vision_error_deg,
-                            expected_steering_direction,
-                            navigation_authority,
-                        )
-                        extreme_position_error_logged_tag_id = measurement.tag_id
 
                 tag_has_valid_orientation = (
                     tag_visible and measurement.orientation_deg is not None
@@ -2228,6 +2294,25 @@ def run_validation(args: argparse.Namespace) -> None:
                         log_navigation_event(
                             logger,
                             "VISION_AUTHORITY_ENTERED",
+                            measurement.tag_id,
+                            distance_estimate.travelled_cm,
+                            elapsed_time_sec,
+                            measurement.image_center_x,
+                            measurement.tag_center_x,
+                            measurement.orientation_deg,
+                            measurement.position_error_x,
+                            position_component_deg,
+                            vision_error_deg,
+                            expected_steering_direction,
+                            selected_authority,
+                        )
+                        if (
+                            ENABLE_POSITION_ASSISTED_VISION
+                            and not position_assisted_vision_logged
+                        ):
+                            log_navigation_event(
+                                logger,
+                                "POSITION_ASSISTED_VISION_ENABLED",
                                 measurement.tag_id,
                                 distance_estimate.travelled_cm,
                                 elapsed_time_sec,
@@ -2240,6 +2325,7 @@ def run_validation(args: argparse.Namespace) -> None:
                                 expected_steering_direction,
                                 selected_authority,
                             )
+                            position_assisted_vision_logged = True
                         vision_authority_tag_id = measurement.tag_id
 
                     if (
@@ -2249,18 +2335,18 @@ def run_validation(args: argparse.Namespace) -> None:
                         log_navigation_event(
                             logger,
                             "VISION_AUTHORITY_EXITED",
-                                vision_authority_tag_id,
-                                distance_estimate.travelled_cm,
-                                elapsed_time_sec,
-                                measurement.image_center_x,
-                                measurement.tag_center_x,
-                                measurement.orientation_deg,
-                                measurement.position_error_x,
-                                position_component_deg,
-                                vision_error_deg,
-                                expected_steering_direction,
-                                navigation_authority,
-                            )
+                            vision_authority_tag_id,
+                            distance_estimate.travelled_cm,
+                            elapsed_time_sec,
+                            measurement.image_center_x,
+                            measurement.tag_center_x,
+                            measurement.orientation_deg,
+                            measurement.position_error_x,
+                            position_component_deg,
+                            vision_error_deg,
+                            expected_steering_direction,
+                            navigation_authority,
+                        )
                         vision_authority_tag_id = None
                         last_vision_error_deg = None
 
@@ -2298,11 +2384,18 @@ def run_validation(args: argparse.Namespace) -> None:
                     and (now - last_pid_update_time) >= PID_UPDATE_INTERVAL_SEC
                 ):
                     if navigation_authority == "VISION":
-                        selected_error_deg = (
-                            measurement.orientation_deg
-                            if measurement.orientation_deg is not None
-                            else last_vision_error_deg
-                        )
+                        if ENABLE_POSITION_ASSISTED_VISION:
+                            selected_error_deg = (
+                                vision_error_deg
+                                if vision_error_deg is not None
+                                else last_vision_error_deg
+                            )
+                        else:
+                            selected_error_deg = (
+                                measurement.orientation_deg
+                                if measurement.orientation_deg is not None
+                                else last_vision_error_deg
+                            )
                     elif (
                         navigation_authority == "IMU"
                         and current_heading_deg is not None
