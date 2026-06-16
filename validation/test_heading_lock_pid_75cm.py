@@ -1273,6 +1273,8 @@ def run_validation(args: argparse.Namespace) -> None:
     processing_summary_printed = False
     startup_lock_count = 0
     imu_ready_received = False
+    imu_ready_logged = False
+    calibration_complete_logged = False
     heading_error_samples: list[float] = []
     pid_output_samples: list[float] = []
     left_frequency_samples: list[float] = []
@@ -1314,6 +1316,9 @@ def run_validation(args: argparse.Namespace) -> None:
             imu_reader.update_from_connection(serial_controller.serial_connection)
             if imu_reader.latest_status == "IMU_READY":
                 imu_ready_received = True
+                if not imu_ready_logged:
+                    print("IMU_READY RECEIVED")
+                    imu_ready_logged = True
             current_heading_deg = imu_reader.get_heading()
 
             now = time.monotonic()
@@ -1447,13 +1452,26 @@ def run_validation(args: argparse.Namespace) -> None:
                     imu_reader.latest_heading_deg = None
                     imu_reader.latest_status = "IMU_CALIBRATING"
                     imu_ready_received = False
+                    imu_ready_logged = False
+                    calibration_complete_logged = False
                     navigation_reference_heading_deg = None
                     state = "CALIBRATE_IMU"
                     print("ENTER CALIBRATE_IMU")
 
             elif state == "CALIBRATE_IMU":
+                print(
+                    "CALIBRATE_IMU CHECK:",
+                    f"imu_ready_received={imu_ready_received}",
+                    f"current_heading_deg={current_heading_deg}",
+                    f"calibration_complete={calibration_complete}",
+                    f"condition_imu_ready={startup_conditions['condition_imu_ready']}",
+                    f"condition_heading_available={startup_conditions['condition_heading_available']}",
+                    f"condition_calibration_complete={startup_conditions['condition_calibration_complete']}",
+                )
                 if calibration_complete:
-                    print("IMU_READY RECEIVED")
+                    if not calibration_complete_logged:
+                        print("CALIBRATION COMPLETE")
+                        calibration_complete_logged = True
                     navigation_reference_heading_deg = current_heading_deg
                     heading_error_deg = 0.0
                     pid_controller.reset()
@@ -1474,6 +1492,11 @@ def run_validation(args: argparse.Namespace) -> None:
                     )
                     state = "HEADING_HOLD_75CM"
                     print("ENTER HEADING_HOLD_75CM")
+                else:
+                    print("STARTUP BLOCKED")
+                    print(f"imu_ready_received={imu_ready_received}")
+                    print(f"current_heading_deg={current_heading_deg}")
+                    print(f"calibration_complete={calibration_complete}")
 
             elif state == "HEADING_HOLD_75CM":
                 distance_estimate.update(
@@ -1621,6 +1644,8 @@ def run_validation(args: argparse.Namespace) -> None:
                             now,
                         )
                         heading_error_deg = latest_pid_result.heading_error_deg
+                        if movement_start_time is None:
+                            print("FIRST SET_DRIVE COMMAND")
                         current_command = send_set_drive(
                             serial_controller,
                             latest_pid_result,
