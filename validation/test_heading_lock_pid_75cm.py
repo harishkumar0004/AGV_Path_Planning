@@ -478,6 +478,11 @@ class PIDDistanceLogger:
                 "avg_abs_position_error_px",
                 "max_abs_position_component_deg",
                 "max_abs_vision_error_deg",
+                "tag1_exit_heading_deg",
+                "tag2_first_heading_deg",
+                "heading_delta_deg",
+                "travel_distance_between_tags_cm",
+                "predicted_lateral_drift_cm",
             ]
         )
 
@@ -588,6 +593,11 @@ class PIDDistanceLogger:
                 "",
                 "",
                 "",
+                "",
+                "",
+                "",
+                "",
+                "",
             ]
         )
 
@@ -652,6 +662,11 @@ class PIDDistanceLogger:
                 format_csv(summary.get("avg_abs_position_error_px")),
                 format_csv(summary.get("max_abs_position_component_deg")),
                 format_csv(summary.get("max_abs_vision_error_deg")),
+                format_csv(summary.get("tag1_exit_heading_deg")),
+                format_csv(summary.get("tag2_first_heading_deg")),
+                format_csv(summary.get("heading_delta_deg")),
+                format_csv(summary.get("travel_distance_between_tags_cm")),
+                format_csv(summary.get("predicted_lateral_drift_cm")),
             ]
         )
         self._csv_file.flush()
@@ -749,6 +764,105 @@ class PIDDistanceLogger:
                 "",
                 "",
                 "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            ]
+        )
+        self._csv_file.flush()
+
+    def write_tag_transition_event(
+        self,
+        event_name: str,
+        timestamp_sec: float,
+        distance_travelled_cm: float,
+        current_heading_deg: float | None,
+        tag_id: int | None,
+        tag_orientation_deg: float | None,
+        position_error_px: float | None,
+        vision_error_deg: float | None,
+        tag1_exit_heading_deg: float | None = None,
+        tag2_first_heading_deg: float | None = None,
+        heading_delta_deg: float | None = None,
+        travel_distance_between_tags_cm: float | None = None,
+        predicted_lateral_drift_cm: float | None = None,
+    ) -> None:
+        """
+        Append a Tag1-to-Tag2 diagnostic event row.
+
+        Args:
+            event_name: Event label.
+            timestamp_sec: Time since program start.
+            distance_travelled_cm: Estimated distance travelled.
+            current_heading_deg: Current IMU heading.
+            tag_id: Relevant tag ID.
+            tag_orientation_deg: Tag orientation, when available.
+            position_error_px: Tag horizontal position error, when available.
+            vision_error_deg: Vision steering error, when available.
+            tag1_exit_heading_deg: Heading captured when Tag1 exited.
+            tag2_first_heading_deg: Heading captured when Tag2 was first detected.
+            heading_delta_deg: Heading change between Tag1 exit and Tag2 first detection.
+            travel_distance_between_tags_cm: Travel distance between diagnostics.
+            predicted_lateral_drift_cm: Drift predicted from heading delta.
+        """
+        self._writer.writerow(
+            [
+                event_name,
+                format_csv(timestamp_sec),
+                format_csv(distance_travelled_cm),
+                "",
+                format_csv(current_heading_deg),
+                "",
+                "",
+                "",
+                "",
+                "",
+                "YES" if tag_id is not None else "NO",
+                tag_id if tag_id is not None else "",
+                format_csv(tag_orientation_deg),
+                format_csv(position_error_px),
+                "",
+                "",
+                "",
+                format_csv(vision_error_deg),
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                format_csv(tag1_exit_heading_deg),
+                format_csv(tag2_first_heading_deg),
+                format_csv(heading_delta_deg),
+                format_csv(travel_distance_between_tags_cm),
+                format_csv(predicted_lateral_drift_cm),
             ]
         )
         self._csv_file.flush()
@@ -1709,6 +1823,7 @@ def calculate_run_summary(
     position_error_samples: list[float],
     position_component_samples: list[float],
     vision_error_samples: list[float],
+    tag_transition_diagnostics: dict[str, float | None],
     reference_heading_deg: float | None,
     target_distance_cm: float,
     actual_distance_cm: float,
@@ -1726,6 +1841,7 @@ def calculate_run_summary(
         position_error_samples: Visible-tag position error samples.
         position_component_samples: Shadow position component samples.
         vision_error_samples: Shadow combined vision error samples.
+        tag_transition_diagnostics: Tag1-to-Tag2 diagnostic values.
         reference_heading_deg: Stored navigation heading reference.
         target_distance_cm: Commanded travel distance.
         actual_distance_cm: Estimated actual travel distance.
@@ -1778,6 +1894,7 @@ def calculate_run_summary(
             "correction_count": 0,
             "runtime_sec": runtime_sec,
             **position_summary,
+            **tag_transition_diagnostics,
         }
 
     absolute_errors = [abs(error) for error in heading_error_samples]
@@ -1815,6 +1932,7 @@ def calculate_run_summary(
         ),
         "runtime_sec": runtime_sec,
         **position_summary,
+        **tag_transition_diagnostics,
     }
 
 
@@ -1872,6 +1990,27 @@ def print_run_summary(summary: dict[str, float | int | None]) -> None:
         format_display(summary["max_abs_vision_error_deg"], " deg"),
     )
     print()
+    print(
+        "Tag1 Exit Heading:",
+        format_display(summary.get("tag1_exit_heading_deg"), " deg", signed=True),
+    )
+    print(
+        "Tag2 First Heading:",
+        format_display(summary.get("tag2_first_heading_deg"), " deg", signed=True),
+    )
+    print(
+        "Heading Delta Tag1->Tag2:",
+        format_display(summary.get("heading_delta_deg"), " deg", signed=True),
+    )
+    print(
+        "Travel Distance Tag1->Tag2:",
+        format_display(summary.get("travel_distance_between_tags_cm"), " cm"),
+    )
+    print(
+        "Predicted Lateral Drift:",
+        format_display(summary.get("predicted_lateral_drift_cm"), " cm"),
+    )
+    print()
     print("Total Runtime:", f"{summary['runtime_sec']:.2f} sec")
     print()
     print("==================================================")
@@ -1888,6 +2027,7 @@ def finalize_run_summary(
     position_error_samples: list[float],
     position_component_samples: list[float],
     vision_error_samples: list[float],
+    tag_transition_diagnostics: dict[str, float | None],
     reference_heading_deg: float | None,
     target_distance_cm: float,
     actual_distance_cm: float,
@@ -1908,6 +2048,7 @@ def finalize_run_summary(
         position_error_samples: Visible-tag position error samples.
         position_component_samples: Shadow position component samples.
         vision_error_samples: Shadow combined vision error samples.
+        tag_transition_diagnostics: Tag1-to-Tag2 diagnostic values.
         reference_heading_deg: Stored navigation heading reference.
         target_distance_cm: Commanded travel distance.
         actual_distance_cm: Estimated distance travelled.
@@ -1934,6 +2075,7 @@ def finalize_run_summary(
         position_error_samples,
         position_component_samples,
         vision_error_samples,
+        tag_transition_diagnostics,
         reference_heading_deg,
         target_distance_cm,
         actual_distance_cm,
@@ -2031,6 +2173,84 @@ def log_navigation_event(
     )
 
 
+def log_tag_transition_event(
+    logger: PIDDistanceLogger,
+    event_name: str,
+    timestamp_sec: float,
+    distance_travelled_cm: float,
+    current_heading_deg: float | None,
+    tag_id: int | None,
+    tag_orientation_deg: float | None,
+    position_error_px: float | None,
+    vision_error_deg: float | None,
+    tag1_exit_heading_deg: float | None = None,
+    tag2_first_heading_deg: float | None = None,
+    heading_delta_deg: float | None = None,
+    travel_distance_between_tags_cm: float | None = None,
+    predicted_lateral_drift_cm: float | None = None,
+) -> None:
+    """
+    Print and write Tag1-to-Tag2 drift diagnostics.
+
+    Args:
+        logger: CSV logger.
+        event_name: Event label.
+        timestamp_sec: Time since program start.
+        distance_travelled_cm: Estimated distance travelled.
+        current_heading_deg: Current IMU heading.
+        tag_id: Relevant tag ID.
+        tag_orientation_deg: Tag orientation, when available.
+        position_error_px: Horizontal tag position error, when available.
+        vision_error_deg: Current vision error, when available.
+        tag1_exit_heading_deg: Heading captured when Tag1 exited.
+        tag2_first_heading_deg: Heading captured when Tag2 was first detected.
+        heading_delta_deg: Heading change from Tag1 exit to Tag2 first detection.
+        travel_distance_between_tags_cm: Travel distance from Tag1 exit to Tag2.
+        predicted_lateral_drift_cm: Estimated lateral drift from heading delta.
+    """
+    print(event_name)
+    print("tag_id:", tag_id if tag_id is not None else "None")
+    print("timestamp:", f"{timestamp_sec:.2f}")
+    print("distance_travelled_cm:", f"{distance_travelled_cm:.2f}")
+    print("current_heading_deg:", format_display(current_heading_deg, " deg", signed=True))
+    print("tag_orientation_deg:", format_display(tag_orientation_deg, " deg", signed=True))
+    print("position_error_px:", format_display(position_error_px, " px", decimals=0, signed=True))
+    print("vision_error_deg:", format_display(vision_error_deg, " deg", signed=True))
+    print(
+        "tag1_exit_heading_deg:",
+        format_display(tag1_exit_heading_deg, " deg", signed=True),
+    )
+    print(
+        "tag2_first_heading_deg:",
+        format_display(tag2_first_heading_deg, " deg", signed=True),
+    )
+    print("heading_delta_deg:", format_display(heading_delta_deg, " deg", signed=True))
+    print(
+        "travel_distance_between_tags_cm:",
+        format_display(travel_distance_between_tags_cm, " cm"),
+    )
+    print(
+        "predicted_lateral_drift_cm:",
+        format_display(predicted_lateral_drift_cm, " cm"),
+    )
+    print()
+    logger.write_tag_transition_event(
+        event_name,
+        timestamp_sec,
+        distance_travelled_cm,
+        current_heading_deg,
+        tag_id,
+        tag_orientation_deg,
+        position_error_px,
+        vision_error_deg,
+        tag1_exit_heading_deg,
+        tag2_first_heading_deg,
+        heading_delta_deg,
+        travel_distance_between_tags_cm,
+        predicted_lateral_drift_cm,
+    )
+
+
 def run_validation(args: argparse.Namespace) -> None:
     """Run the 75 cm PID heading-control validation test."""
     application_state = ApplicationState()
@@ -2092,6 +2312,21 @@ def run_validation(args: argparse.Namespace) -> None:
     position_error_samples: list[float] = []
     position_component_samples: list[float] = []
     vision_error_samples: list[float] = []
+    tag_transition_diagnostics: dict[str, float | None] = {
+        "tag1_exit_heading_deg": None,
+        "tag2_first_heading_deg": None,
+        "heading_delta_deg": None,
+        "travel_distance_between_tags_cm": None,
+        "predicted_lateral_drift_cm": None,
+    }
+    tag1_visible_previous = False
+    tag1_exit_logged = False
+    tag2_first_detection_logged = False
+    heading_change_logged = False
+    tag1_exit_distance_cm: float | None = None
+    last_tag1_orientation_deg: float | None = None
+    last_tag1_position_error_px: float | None = None
+    last_tag1_vision_error_deg: float | None = None
 
     if not perception_manager.initialize():
         print("PerceptionManager failed to initialize camera.")
@@ -2244,6 +2479,7 @@ def run_validation(args: argparse.Namespace) -> None:
                     position_error_samples,
                     position_component_samples,
                     vision_error_samples,
+                    tag_transition_diagnostics,
                     navigation_reference_heading_deg,
                     args.travel_distance_cm,
                     distance_estimate.travelled_cm,
@@ -2398,6 +2634,76 @@ def run_validation(args: argparse.Namespace) -> None:
                         visible_position_error_px,
                     )
 
+                    if visible_tag_id == 1:
+                        last_tag1_orientation_deg = visible_orientation_deg
+                        last_tag1_position_error_px = visible_position_error_px
+                        last_tag1_vision_error_deg = visible_vision_error_deg
+
+                    if visible_tag_id == 2 and not tag2_first_detection_logged:
+                        tag2_first_detection_logged = True
+                        tag_transition_diagnostics["tag2_first_heading_deg"] = (
+                            current_heading_deg
+                        )
+                        log_tag_transition_event(
+                            logger,
+                            "TAG2_FIRST_DETECTION",
+                            elapsed_time_sec,
+                            distance_estimate.travelled_cm,
+                            current_heading_deg,
+                            visible_tag_id,
+                            visible_orientation_deg,
+                            visible_position_error_px,
+                            visible_vision_error_deg,
+                            tag_transition_diagnostics["tag1_exit_heading_deg"],
+                            tag_transition_diagnostics["tag2_first_heading_deg"],
+                        )
+
+                        if (
+                            not heading_change_logged
+                            and tag_transition_diagnostics["tag1_exit_heading_deg"]
+                            is not None
+                            and current_heading_deg is not None
+                            and tag1_exit_distance_cm is not None
+                        ):
+                            heading_delta_deg = wrap_angle_deg(
+                                current_heading_deg
+                                - tag_transition_diagnostics["tag1_exit_heading_deg"]
+                            )
+                            travel_distance_between_tags_cm = max(
+                                distance_estimate.travelled_cm - tag1_exit_distance_cm,
+                                0.0,
+                            )
+                            predicted_lateral_drift_cm = (
+                                travel_distance_between_tags_cm
+                                * math.tan(math.radians(abs(heading_delta_deg)))
+                            )
+                            tag_transition_diagnostics["heading_delta_deg"] = (
+                                heading_delta_deg
+                            )
+                            tag_transition_diagnostics[
+                                "travel_distance_between_tags_cm"
+                            ] = travel_distance_between_tags_cm
+                            tag_transition_diagnostics[
+                                "predicted_lateral_drift_cm"
+                            ] = predicted_lateral_drift_cm
+                            heading_change_logged = True
+                            log_tag_transition_event(
+                                logger,
+                                "HEADING_CHANGE_BETWEEN_TAGS",
+                                elapsed_time_sec,
+                                distance_estimate.travelled_cm,
+                                current_heading_deg,
+                                None,
+                                None,
+                                None,
+                                None,
+                                tag_transition_diagnostics["tag1_exit_heading_deg"],
+                                tag_transition_diagnostics["tag2_first_heading_deg"],
+                                heading_delta_deg,
+                                travel_distance_between_tags_cm,
+                                predicted_lateral_drift_cm,
+                            )
+
                     if visible_position_error_px is not None:
                         position_error_samples.append(visible_position_error_px)
                     if visible_position_component_deg is not None:
@@ -2481,6 +2787,31 @@ def run_validation(args: argparse.Namespace) -> None:
                                 navigation_authority,
                             )
                             pid_csv_extreme_position_error_tag_ids.add(visible_tag_id)
+
+                tag1_currently_visible = 1 in current_detection_tag_ids
+                if (
+                    tag1_visible_previous
+                    and not tag1_currently_visible
+                    and not tag1_exit_logged
+                ):
+                    tag1_exit_logged = True
+                    tag1_exit_distance_cm = distance_estimate.travelled_cm
+                    tag_transition_diagnostics["tag1_exit_heading_deg"] = (
+                        current_heading_deg
+                    )
+                    log_tag_transition_event(
+                        logger,
+                        "TAG1_VISION_EXIT",
+                        elapsed_time_sec,
+                        distance_estimate.travelled_cm,
+                        current_heading_deg,
+                        1,
+                        last_tag1_orientation_deg,
+                        last_tag1_position_error_px,
+                        last_tag1_vision_error_deg,
+                        tag_transition_diagnostics["tag1_exit_heading_deg"],
+                    )
+                tag1_visible_previous = tag1_currently_visible
 
                 lost_pid_csv_tag_ids = pid_csv_visible_tag_ids - current_detection_tag_ids
                 if lost_pid_csv_tag_ids:
@@ -2650,6 +2981,7 @@ def run_validation(args: argparse.Namespace) -> None:
                         position_error_samples,
                         position_component_samples,
                         vision_error_samples,
+                        tag_transition_diagnostics,
                         navigation_reference_heading_deg,
                         args.travel_distance_cm,
                         distance_estimate.travelled_cm,
@@ -2721,6 +3053,7 @@ def run_validation(args: argparse.Namespace) -> None:
                     position_error_samples,
                     position_component_samples,
                     vision_error_samples,
+                    tag_transition_diagnostics,
                     navigation_reference_heading_deg,
                     args.travel_distance_cm,
                     distance_estimate.travelled_cm,
