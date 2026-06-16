@@ -40,8 +40,8 @@ except ModuleNotFoundError as error:
     DEPENDENCY_ERROR = error
 
 
-KP_HEADING = 100.0
-KI_HEADING = 5.0
+KP_HEADING = 90.0
+KI_HEADING = 10.0
 KD_HEADING = 0.0
 
 HEADING_DEADBAND_DEG = 0.2
@@ -54,6 +54,8 @@ MAX_FREQUENCY_HZ = 10000.0
 PID_UPDATE_INTERVAL_SEC = 0.05
 VISION_LOST_FRAME_THRESHOLD = 5
 TAG_ACQUISITION_FRAME_THRESHOLD = 3
+VISION_POSITION_GAIN_DEG_PER_PX = 0.01
+VISION_POSITION_COMPONENT_LIMIT_DEG = 3.0
 
 DEFAULT_TRAVEL_DISTANCE_CM = 150.0
 DEFAULT_WHEEL_DIAMETER_MM = 117.0
@@ -439,6 +441,8 @@ class PIDDistanceLogger:
                 "tag_id",
                 "tag_orientation_deg",
                 "position_error_px",
+                "position_component_deg",
+                "vision_error_deg",
                 "kp",
                 "ki",
                 "kd",
@@ -477,6 +481,8 @@ class PIDDistanceLogger:
         tag_id: int | None,
         tag_orientation_deg: float | None,
         position_error_px: float | None,
+        position_component_deg: float | None,
+        vision_error_deg: float | None,
         pid_result: PIDResult | None,
     ) -> None:
         """
@@ -496,6 +502,8 @@ class PIDDistanceLogger:
             tag_id: Latest visible tag ID.
             tag_orientation_deg: Latest tag orientation.
             position_error_px: Latest horizontal position error.
+            position_component_deg: Shadow position correction component.
+            vision_error_deg: Shadow combined vision error.
             pid_result: Latest PID calculation.
         """
         self._writer.writerow(
@@ -514,6 +522,8 @@ class PIDDistanceLogger:
                 tag_id if tag_id is not None else "",
                 format_csv(tag_orientation_deg),
                 format_csv(position_error_px),
+                format_csv(position_component_deg),
+                format_csv(vision_error_deg),
                 format_csv(pid_result.kp if pid_result is not None else None),
                 format_csv(pid_result.ki if pid_result is not None else None),
                 format_csv(pid_result.kd if pid_result is not None else None),
@@ -555,6 +565,8 @@ class PIDDistanceLogger:
                 format_csv(summary.get("reference_heading_deg")),
                 format_csv(summary.get("final_current_heading_deg")),
                 format_csv(summary.get("final_heading_error_deg")),
+                "",
+                "",
                 "",
                 "",
                 "",
@@ -625,6 +637,8 @@ class PIDDistanceLogger:
                 tag_id if tag_id is not None else "",
                 format_csv(tag_orientation_deg),
                 format_csv(position_error_px),
+                "",
+                "",
                 "",
                 "",
                 "",
@@ -752,6 +766,72 @@ def calculate_tag_pixel_size(detection: dict | None) -> tuple[float | None, floa
     return max(x_values) - min(x_values), max(y_values) - min(y_values)
 
 
+def calculate_position_component_deg(position_error_px: float | None) -> float | None:
+    """
+    Convert horizontal tag offset into a diagnostic steering component.
+
+    This value is logged only. It is not used by the PID steering loop.
+
+    Args:
+        position_error_px: Tag center minus image center in pixels.
+
+    Returns:
+        Position component in degrees, clamped to the diagnostic limit.
+    """
+    if position_error_px is None:
+        return None
+
+    raw_component = position_error_px * VISION_POSITION_GAIN_DEG_PER_PX
+    return max(
+        -VISION_POSITION_COMPONENT_LIMIT_DEG,
+        min(VISION_POSITION_COMPONENT_LIMIT_DEG, raw_component),
+    )
+
+
+def calculate_combined_vision_error_deg(
+    orientation_deg: float | None,
+    position_component_deg: float | None,
+) -> float | None:
+    """
+    Calculate a diagnostic combined vision error.
+
+    This value is logged only. Current steering remains orientation-only.
+
+    Args:
+        orientation_deg: AprilTag orientation in degrees.
+        position_component_deg: Diagnostic position component in degrees.
+
+    Returns:
+        Combined orientation plus position component, or None.
+    """
+    if orientation_deg is None:
+        return None
+
+    return orientation_deg + (position_component_deg or 0.0)
+
+
+def expected_position_steering_direction(position_error_px: float | None) -> str:
+    """
+    Describe the expected steering direction from tag position alone.
+
+    Args:
+        position_error_px: Tag center minus image center in pixels.
+
+    Returns:
+        Human-readable expected steering direction.
+    """
+    if position_error_px is None:
+        return "None"
+
+    if position_error_px > 0:
+        return "RIGHT"
+
+    if position_error_px < 0:
+        return "LEFT"
+
+    return "CENTERED"
+
+
 def update_perception_compatible(
     perception_manager: PerceptionManager,
 ) -> tuple[PerceptionState, list[dict]]:
@@ -861,6 +941,9 @@ def draw_overlay(
     fps: float,
     detection_time_ms: float,
     tag_visible: bool,
+    position_component_deg: float | None,
+    vision_error_deg: float | None,
+    expected_steering_direction: str,
     pid_result: PIDResult | None,
     gate_status: StartGateStatus | None,
     current_command: str,
@@ -884,6 +967,9 @@ def draw_overlay(
         fps: Camera FPS from PerceptionManager.
         detection_time_ms: Latest detection update time.
         tag_visible: True when a tag is visible.
+        position_component_deg: Shadow position correction component.
+        vision_error_deg: Shadow combined vision error.
+        expected_steering_direction: Expected steering from tag position.
         pid_result: Latest PID result.
         gate_status: Current vision gate status.
         current_command: Last transmitted command.
@@ -957,6 +1043,9 @@ def draw_overlay(
         ("Tag ID", str(measurement.tag_id) if measurement.tag_id is not None else "None"),
         ("Tag Orientation", format_display(measurement.orientation_deg, " deg", signed=True)),
         ("Position Error X", format_display(measurement.position_error_x, " px", decimals=0, signed=True)),
+        ("Position Component", format_display(position_component_deg, " deg", signed=True)),
+        ("Vision Error Shadow", format_display(vision_error_deg, " deg", signed=True)),
+        ("Position Steering", expected_steering_direction),
         ("P Term", format_display(pid_result.p_term if pid_result else None, signed=True)),
         ("I Term", format_display(pid_result.i_term if pid_result else None, signed=True)),
         ("D Term", format_display(pid_result.d_term if pid_result else None, signed=True)),
@@ -1004,6 +1093,11 @@ def log_terminal(
     detection_time_ms: float,
     tag_visible: bool,
     tag_id: int | None,
+    orientation_deg: float | None,
+    position_error_px: float | None,
+    position_component_deg: float | None,
+    vision_error_deg: float | None,
+    expected_steering_direction: str,
     pid_result: PIDResult | None,
     current_command: str,
 ) -> None:
@@ -1022,6 +1116,11 @@ def log_terminal(
         detection_time_ms: Latest detection update time.
         tag_visible: True when a tag is visible.
         tag_id: Latest visible tag ID.
+        orientation_deg: Latest tag orientation.
+        position_error_px: Latest tag horizontal position error.
+        position_component_deg: Shadow position correction component.
+        vision_error_deg: Shadow combined vision error.
+        expected_steering_direction: Expected steering from tag position.
         pid_result: Latest PID result.
         current_command: Last transmitted command.
     """
@@ -1036,6 +1135,11 @@ def log_terminal(
     print("Detection Time:", f"{detection_time_ms:.1f} ms")
     print("Tag Visible:", "YES" if tag_visible else "NO")
     print("Tag ID:", tag_id if tag_id is not None else "None")
+    print("Orientation Deg:", format_display(orientation_deg, " deg", signed=True))
+    print("Position Error PX:", format_display(position_error_px, " px", decimals=0, signed=True))
+    print("Position Component:", format_display(position_component_deg, " deg", signed=True))
+    print("Vision Error Shadow:", format_display(vision_error_deg, " deg", signed=True))
+    print("Expected Steering Direction:", expected_steering_direction)
     print("P Term:", format_display(pid_result.p_term if pid_result else None, signed=True))
     print("I Term:", format_display(pid_result.i_term if pid_result else None, signed=True))
     print("D Term:", format_display(pid_result.d_term if pid_result else None, signed=True))
@@ -1665,6 +1769,16 @@ def run_validation(args: argparse.Namespace) -> None:
                 )
                 else None
             )
+            position_component_deg = calculate_position_component_deg(
+                measurement.position_error_x,
+            )
+            vision_error_deg = calculate_combined_vision_error_deg(
+                measurement.orientation_deg,
+                position_component_deg,
+            )
+            expected_steering_direction = expected_position_steering_direction(
+                measurement.position_error_x,
+            )
 
             key = cv2.waitKey(1) & 0xFF
             startup_phase = "RUNTIME" if movement_start_time is not None else "STARTUP"
@@ -2036,6 +2150,8 @@ def run_validation(args: argparse.Namespace) -> None:
                     # Same orientation value shown on the OpenCV overlay.
                     measurement.orientation_deg,
                     measurement.position_error_x,
+                    position_component_deg,
+                    vision_error_deg,
                     latest_pid_result,
                 )
                 last_csv_time = now
@@ -2053,6 +2169,11 @@ def run_validation(args: argparse.Namespace) -> None:
                     measurement.detection_time_ms,
                     tag_visible,
                     measurement.tag_id,
+                    measurement.orientation_deg,
+                    measurement.position_error_x,
+                    position_component_deg,
+                    vision_error_deg,
+                    expected_steering_direction,
                     latest_pid_result,
                     current_command,
                 )
@@ -2075,6 +2196,9 @@ def run_validation(args: argparse.Namespace) -> None:
                     measurement.fps,
                     measurement.detection_time_ms,
                     tag_visible,
+                    position_component_deg,
+                    vision_error_deg,
+                    expected_steering_direction,
                     latest_pid_result,
                     gate_status,
                     current_command,

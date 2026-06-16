@@ -26,8 +26,8 @@ except ModuleNotFoundError as error:
     DEPENDENCY_ERROR = error
 
 
-KP_HEADING = 100.0
-KI_HEADING = 5.0
+KP_HEADING = 90.0
+KI_HEADING = 10.0
 KD_HEADING = 0.0
 
 HEADING_DEADBAND_DEG = 0.2
