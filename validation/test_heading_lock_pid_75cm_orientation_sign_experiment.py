@@ -519,6 +519,8 @@ class PIDDistanceLogger:
                 "experimental_vision_error_deg",
                 "tag2_first_vision_error_deg",
                 "avg_abs_vision_error_deg",
+                "raw_position_error_px",
+                "position_steering_error_px",
             ]
         )
 
@@ -599,6 +601,9 @@ class PIDDistanceLogger:
             orientation_weight,
         )
         final_vision_direction = calculate_final_vision_direction(vision_error_deg)
+        raw_position_error_px = (
+            -position_error_px if position_error_px is not None else None
+        )
         self._writer.writerow(
             [
                 "SAMPLE",
@@ -691,6 +696,8 @@ class PIDDistanceLogger:
                 format_csv(vision_error_deg),
                 "",
                 "",
+                format_csv(raw_position_error_px),
+                format_csv(position_error_px),
             ]
         )
 
@@ -796,6 +803,8 @@ class PIDDistanceLogger:
                 "",
                 format_csv(summary.get("tag2_first_vision_error_deg")),
                 format_csv(summary.get("avg_abs_vision_error_deg")),
+                "",
+                "",
             ]
         )
         self._csv_file.flush()
@@ -921,6 +930,8 @@ class PIDDistanceLogger:
                 orientation_direction,
                 position_direction,
                 steering_relationship,
+                "",
+                "",
                 "",
                 "",
                 "",
@@ -1075,6 +1086,8 @@ class PIDDistanceLogger:
                 "",
                 "",
                 "",
+                "",
+                "",
             ]
         )
         self._csv_file.flush()
@@ -1191,6 +1204,8 @@ class PIDDistanceLogger:
                 "",
                 "",
                 "",
+                "",
+                "",
             ]
         )
         self._csv_file.flush()
@@ -1200,9 +1215,12 @@ class PIDDistanceLogger:
         timestamp_sec: float,
         distance_travelled_cm: float,
         tag_id: int,
+        image_center_x: float | None,
+        tag_center_x: float | None,
+        raw_position_error_px: float | None,
+        position_steering_error_px: float | None,
         raw_orientation_deg: float | None,
         orientation_steering_error_deg: float | None,
-        position_error_px: float | None,
         orientation_weight: float | None,
         position_component_deg: float | None,
         orientation_contribution_deg: float | None,
@@ -1211,6 +1229,8 @@ class PIDDistanceLogger:
         orientation_direction: str,
         position_direction: str,
         final_vision_direction: str,
+        left_frequency_hz: float | None,
+        right_frequency_hz: float | None,
         production_vision_error_deg: float | None,
         experimental_vision_error_deg: float | None,
     ) -> None:
@@ -1221,9 +1241,12 @@ class PIDDistanceLogger:
             timestamp_sec: Time since program start.
             distance_travelled_cm: Estimated distance travelled.
             tag_id: Visible tag ID.
+            image_center_x: Image center x coordinate.
+            tag_center_x: Tag center x coordinate.
+            raw_position_error_px: Tag center minus image center.
+            position_steering_error_px: Image center minus tag center.
             raw_orientation_deg: Raw AprilTag orientation.
             orientation_steering_error_deg: Negated orientation error.
-            position_error_px: Horizontal tag offset.
             orientation_weight: Adaptive orientation weight.
             position_component_deg: Position component in degrees.
             orientation_contribution_deg: Weighted orientation contribution.
@@ -1232,25 +1255,31 @@ class PIDDistanceLogger:
             orientation_direction: Direction implied by raw orientation.
             position_direction: Direction implied by position offset.
             final_vision_direction: Direction implied by experimental vision error.
+            left_frequency_hz: Latest commanded left wheel frequency.
+            right_frequency_hz: Latest commanded right wheel frequency.
             production_vision_error_deg: Original production-style vision error.
             experimental_vision_error_deg: Experimental vision error.
         """
-        row = [""] * 90
+        row = [""] * 92
         row[0] = "VISION_SIGN_EXPERIMENT"
         row[1] = format_csv(timestamp_sec)
         row[2] = format_csv(distance_travelled_cm)
         row[10] = "YES"
         row[11] = tag_id
         row[12] = format_csv(raw_orientation_deg)
-        row[13] = format_csv(position_error_px)
+        row[13] = format_csv(position_steering_error_px)
         row[14] = format_csv(position_component_deg)
         row[16] = format_csv(orientation_weight)
         row[17] = format_csv(vision_error_deg)
+        row[28] = format_csv(left_frequency_hz)
+        row[29] = format_csv(right_frequency_hz)
+        row[41] = format_csv(image_center_x)
+        row[42] = format_csv(tag_center_x)
         row[75] = format_csv(raw_orientation_deg)
         row[76] = format_csv(orientation_steering_error_deg)
         row[77] = format_csv(orientation_weight)
         row[78] = format_csv(orientation_contribution_deg)
-        row[79] = format_csv(position_error_px)
+        row[79] = format_csv(position_steering_error_px)
         row[80] = format_csv(position_component_deg)
         row[81] = format_csv(vision_error_deg)
         row[82] = format_csv(selected_error_deg)
@@ -1259,6 +1288,8 @@ class PIDDistanceLogger:
         row[85] = final_vision_direction
         row[86] = format_csv(production_vision_error_deg)
         row[87] = format_csv(experimental_vision_error_deg)
+        row[90] = format_csv(raw_position_error_px)
+        row[91] = format_csv(position_steering_error_px)
         self._writer.writerow(row)
         self._csv_file.flush()
 
@@ -1355,6 +1386,26 @@ def get_detection_position_error_px(
         image_center_x: Image center x coordinate.
 
     Returns:
+        Image center minus tag center, or None.
+    """
+    if image_center_x is None:
+        return None
+
+    return image_center_x - float(detection["center_x"])
+
+
+def get_detection_raw_position_error_px(
+    detection: dict,
+    image_center_x: float | None,
+) -> float | None:
+    """
+    Calculate the raw horizontal tag offset before steering-sign conversion.
+
+    Args:
+        detection: Raw AprilTag detection dictionary.
+        image_center_x: Image center x coordinate.
+
+    Returns:
         Tag center minus image center, or None.
     """
     if image_center_x is None:
@@ -1368,7 +1419,7 @@ def expected_steering_direction_from_error(position_error_px: float | None) -> s
     Describe the expected steering direction from a position error value.
 
     Args:
-        position_error_px: Tag center minus image center in pixels.
+        position_error_px: Image center minus tag center in pixels.
 
     Returns:
         Human-readable expected steering direction.
@@ -1412,7 +1463,7 @@ def calculate_position_steering_direction(position_error_px: float | None) -> st
     Convert horizontal tag offset into a diagnostic steering direction.
 
     Args:
-        position_error_px: Tag center minus image center in pixels.
+        position_error_px: Image center minus tag center in pixels.
 
     Returns:
         LEFT, RIGHT, CENTER, or UNKNOWN.
@@ -1484,7 +1535,7 @@ def calculate_position_component_deg(position_error_px: float | None) -> float |
     This value is logged only. It is not used by the PID steering loop.
 
     Args:
-        position_error_px: Tag center minus image center in pixels.
+        position_error_px: Image center minus tag center in pixels.
 
     Returns:
         Position component in degrees, clamped to the diagnostic limit.
@@ -1618,7 +1669,7 @@ def calculate_position_weight(position_error_px: float | None) -> float | None:
     Calculate adaptive position weight from horizontal tag offset.
 
     Args:
-        position_error_px: Tag center minus image center in pixels.
+        position_error_px: Image center minus tag center in pixels.
 
     Returns:
         Position weight in the range 0.0..1.0, or None.
@@ -1710,7 +1761,7 @@ def expected_position_steering_direction(position_error_px: float | None) -> str
     Describe the expected steering direction from tag position alone.
 
     Args:
-        position_error_px: Tag center minus image center in pixels.
+        position_error_px: Image center minus tag center in pixels.
 
     Returns:
         Human-readable expected steering direction.
@@ -1794,7 +1845,7 @@ def update_perception_compatible(
             measurement.position_error_x = None
         else:
             measurement.position_error_px = (
-                first_detection["center_x"] - measurement.image_center_x
+                measurement.image_center_x - first_detection["center_x"]
             )
             measurement.position_error_x = measurement.position_error_px
     else:
@@ -3031,6 +3082,7 @@ def run_validation(args: argparse.Namespace) -> None:
 
     print("EXPERIMENT:")
     print("ORIENTATION SIGN CONVERSION ENABLED")
+    print("position_error_px = image_center_x - tag_center_x")
     print("orientation_steering_error_deg = -orientation_deg")
     print()
     print("ENTER WAIT_FOR_TAG1")
@@ -3290,6 +3342,12 @@ def run_validation(args: argparse.Namespace) -> None:
                         "orientation_deg",
                         calculate_detection_orientation_deg(visible_detection),
                     )
+                    visible_raw_position_error_px = (
+                        get_detection_raw_position_error_px(
+                            visible_detection,
+                            measurement.image_center_x,
+                        )
+                    )
                     visible_position_error_px = get_detection_position_error_px(
                         visible_detection,
                         measurement.image_center_x,
@@ -3364,9 +3422,12 @@ def run_validation(args: argparse.Namespace) -> None:
                         elapsed_time_sec,
                         distance_estimate.travelled_cm,
                         visible_tag_id,
+                        measurement.image_center_x,
+                        float(visible_detection["center_x"]),
+                        visible_raw_position_error_px,
+                        visible_position_error_px,
                         visible_orientation_deg,
                         visible_orientation_steering_error_deg,
-                        visible_position_error_px,
                         visible_orientation_weight,
                         visible_position_component_deg,
                         visible_orientation_contribution_deg,
@@ -3375,6 +3436,12 @@ def run_validation(args: argparse.Namespace) -> None:
                         visible_orientation_direction,
                         visible_position_direction,
                         visible_final_vision_direction,
+                        latest_pid_result.left_frequency_hz
+                        if latest_pid_result is not None
+                        else None,
+                        latest_pid_result.right_frequency_hz
+                        if latest_pid_result is not None
+                        else None,
                         visible_production_vision_error_deg,
                         visible_vision_error_deg,
                     )
