@@ -495,6 +495,12 @@ class PIDDistanceLogger:
                 "tag2_first_orientation_deg",
                 "tag2_first_current_heading_deg",
                 "tag2_first_distance_travelled_cm",
+                "orientation_direction",
+                "position_direction",
+                "steering_relationship",
+                "same_direction_count",
+                "opposite_direction_count",
+                "neutral_count",
             ]
         )
 
@@ -554,6 +560,14 @@ class PIDDistanceLogger:
             expected_position_steering_direction: Expected steering from tag position.
             pid_result: Latest PID calculation.
         """
+        orientation_direction = calculate_orientation_steering_direction(
+            tag_orientation_deg,
+        )
+        position_direction = calculate_position_steering_direction(position_error_px)
+        steering_relationship = calculate_steering_relationship(
+            orientation_direction,
+            position_direction,
+        )
         self._writer.writerow(
             [
                 "SAMPLE",
@@ -619,6 +633,12 @@ class PIDDistanceLogger:
                 "",
                 "",
                 "",
+                "",
+                "",
+                "",
+                orientation_direction,
+                position_direction,
+                steering_relationship,
                 "",
                 "",
                 "",
@@ -703,6 +723,12 @@ class PIDDistanceLogger:
                 format_csv(summary.get("tag2_first_orientation_deg")),
                 format_csv(summary.get("tag2_first_current_heading_deg")),
                 format_csv(summary.get("tag2_first_distance_travelled_cm")),
+                "",
+                "",
+                "",
+                summary.get("same_direction_count", ""),
+                summary.get("opposite_direction_count", ""),
+                summary.get("neutral_count", ""),
             ]
         )
         self._csv_file.flush()
@@ -749,6 +775,14 @@ class PIDDistanceLogger:
             expected_position_steering_direction: Expected steering from tag position.
             navigation_authority: Current navigation authority.
         """
+        orientation_direction = calculate_orientation_steering_direction(
+            tag_orientation_deg,
+        )
+        position_direction = calculate_position_steering_direction(position_error_px)
+        steering_relationship = calculate_steering_relationship(
+            orientation_direction,
+            position_direction,
+        )
         self._writer.writerow(
             [
                 event_name,
@@ -814,6 +848,12 @@ class PIDDistanceLogger:
                 "",
                 "",
                 "",
+                "",
+                "",
+                "",
+                orientation_direction,
+                position_direction,
+                steering_relationship,
                 "",
                 "",
                 "",
@@ -923,6 +963,15 @@ class PIDDistanceLogger:
                 format_csv(tag_orientation_deg if event_name == "TAG2_FIRST_DETECTION" else None),
                 format_csv(current_heading_deg if event_name == "TAG2_FIRST_DETECTION" else None),
                 format_csv(distance_travelled_cm if event_name == "TAG2_FIRST_DETECTION" else None),
+                calculate_orientation_steering_direction(tag_orientation_deg),
+                calculate_position_steering_direction(position_error_px),
+                calculate_steering_relationship(
+                    calculate_orientation_steering_direction(tag_orientation_deg),
+                    calculate_position_steering_direction(position_error_px),
+                ),
+                "",
+                "",
+                "",
             ]
         )
         self._csv_file.flush()
@@ -956,6 +1005,12 @@ class PIDDistanceLogger:
                 format_csv(current_heading_deg),
                 "",
                 "IMU",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
                 "",
                 "",
                 "",
@@ -1140,6 +1195,76 @@ def expected_steering_direction_from_error(position_error_px: float | None) -> s
         return "LEFT"
 
     return "CENTERED"
+
+
+def calculate_orientation_steering_direction(orientation_deg: float | None) -> str:
+    """
+    Convert tag orientation into a diagnostic steering direction.
+
+    Args:
+        orientation_deg: AprilTag orientation in degrees.
+
+    Returns:
+        LEFT, RIGHT, CENTER, or UNKNOWN.
+    """
+    if orientation_deg is None:
+        return "UNKNOWN"
+
+    if orientation_deg < 0:
+        return "LEFT"
+
+    if orientation_deg > 0:
+        return "RIGHT"
+
+    return "CENTER"
+
+
+def calculate_position_steering_direction(position_error_px: float | None) -> str:
+    """
+    Convert horizontal tag offset into a diagnostic steering direction.
+
+    Args:
+        position_error_px: Tag center minus image center in pixels.
+
+    Returns:
+        LEFT, RIGHT, CENTER, or UNKNOWN.
+    """
+    if position_error_px is None:
+        return "UNKNOWN"
+
+    if position_error_px < 0:
+        return "LEFT"
+
+    if position_error_px > 0:
+        return "RIGHT"
+
+    return "CENTER"
+
+
+def calculate_steering_relationship(
+    orientation_direction: str,
+    position_direction: str,
+) -> str:
+    """
+    Classify whether orientation and position ask for the same steering direction.
+
+    Args:
+        orientation_direction: Orientation-derived steering direction.
+        position_direction: Position-derived steering direction.
+
+    Returns:
+        SAME, OPPOSITE, or NEUTRAL.
+    """
+    if (
+        orientation_direction not in {"CENTER", "UNKNOWN"}
+        and position_direction not in {"CENTER", "UNKNOWN"}
+    ):
+        if orientation_direction == position_direction:
+            return "SAME"
+
+        return "OPPOSITE"
+
+    return "NEUTRAL"
 
 
 def calculate_tag_pixel_size(detection: dict | None) -> tuple[float | None, float | None]:
@@ -1976,6 +2101,7 @@ def calculate_run_summary(
     position_component_samples: list[float],
     vision_error_samples: list[float],
     tag_transition_diagnostics: dict[str, float | None],
+    steering_relationship_counts: dict[str, int],
     reference_heading_deg: float | None,
     target_distance_cm: float,
     actual_distance_cm: float,
@@ -1994,6 +2120,7 @@ def calculate_run_summary(
         position_component_samples: Shadow position component samples.
         vision_error_samples: Shadow combined vision error samples.
         tag_transition_diagnostics: Tag1-to-Tag2 diagnostic values.
+        steering_relationship_counts: SAME, OPPOSITE, and NEUTRAL frame counts.
         reference_heading_deg: Stored navigation heading reference.
         target_distance_cm: Commanded travel distance.
         actual_distance_cm: Estimated actual travel distance.
@@ -2045,6 +2172,9 @@ def calculate_run_summary(
             "min_right_frequency_hz": None,
             "correction_count": 0,
             "runtime_sec": runtime_sec,
+            "same_direction_count": steering_relationship_counts.get("SAME", 0),
+            "opposite_direction_count": steering_relationship_counts.get("OPPOSITE", 0),
+            "neutral_count": steering_relationship_counts.get("NEUTRAL", 0),
             **position_summary,
             **tag_transition_diagnostics,
         }
@@ -2083,6 +2213,9 @@ def calculate_run_summary(
             1 for pid_output in pid_output_samples if abs(pid_output) > 0.0
         ),
         "runtime_sec": runtime_sec,
+        "same_direction_count": steering_relationship_counts.get("SAME", 0),
+        "opposite_direction_count": steering_relationship_counts.get("OPPOSITE", 0),
+        "neutral_count": steering_relationship_counts.get("NEUTRAL", 0),
         **position_summary,
         **tag_transition_diagnostics,
     }
@@ -2189,6 +2322,10 @@ def print_run_summary(summary: dict[str, float | int | None]) -> None:
         format_display(summary.get("tag2_first_current_heading_deg"), " deg", signed=True),
     )
     print()
+    print("Steering SAME Count:", summary.get("same_direction_count", 0))
+    print("Steering OPPOSITE Count:", summary.get("opposite_direction_count", 0))
+    print("Steering NEUTRAL Count:", summary.get("neutral_count", 0))
+    print()
     print("Total Runtime:", f"{summary['runtime_sec']:.2f} sec")
     print()
     print("==================================================")
@@ -2206,6 +2343,7 @@ def finalize_run_summary(
     position_component_samples: list[float],
     vision_error_samples: list[float],
     tag_transition_diagnostics: dict[str, float | None],
+    steering_relationship_counts: dict[str, int],
     reference_heading_deg: float | None,
     target_distance_cm: float,
     actual_distance_cm: float,
@@ -2227,6 +2365,7 @@ def finalize_run_summary(
         position_component_samples: Shadow position component samples.
         vision_error_samples: Shadow combined vision error samples.
         tag_transition_diagnostics: Tag1-to-Tag2 diagnostic values.
+        steering_relationship_counts: SAME, OPPOSITE, and NEUTRAL frame counts.
         reference_heading_deg: Stored navigation heading reference.
         target_distance_cm: Commanded travel distance.
         actual_distance_cm: Estimated distance travelled.
@@ -2254,6 +2393,7 @@ def finalize_run_summary(
         position_component_samples,
         vision_error_samples,
         tag_transition_diagnostics,
+        steering_relationship_counts,
         reference_heading_deg,
         target_distance_cm,
         actual_distance_cm,
@@ -2319,6 +2459,15 @@ def log_navigation_event(
     print("position_weight:", format_display(position_weight))
     print("orientation_weight:", format_display(orientation_weight))
     print("vision_error_deg:", format_display(vision_error_deg, " deg", signed=True))
+    orientation_direction = calculate_orientation_steering_direction(tag_orientation_deg)
+    position_direction = calculate_position_steering_direction(position_error_px)
+    steering_relationship = calculate_steering_relationship(
+        orientation_direction,
+        position_direction,
+    )
+    print("orientation_direction:", orientation_direction)
+    print("position_direction:", position_direction)
+    print("steering_relationship:", steering_relationship)
     print("orientation_position_relationship:", orientation_position_relationship)
     print(
         "orientation_contribution_pct:",
@@ -2540,6 +2689,12 @@ def run_validation(args: argparse.Namespace) -> None:
     position_error_samples: list[float] = []
     position_component_samples: list[float] = []
     vision_error_samples: list[float] = []
+    steering_relationship_counts = {
+        "SAME": 0,
+        "OPPOSITE": 0,
+        "NEUTRAL": 0,
+    }
+    last_steering_relationship_by_tag: dict[int, str] = {}
     tag_transition_diagnostics: dict[str, float | None] = {
         "tag1_exit_heading_deg": None,
         "tag2_first_heading_deg": None,
@@ -2717,6 +2872,7 @@ def run_validation(args: argparse.Namespace) -> None:
                     position_component_samples,
                     vision_error_samples,
                     tag_transition_diagnostics,
+                    steering_relationship_counts,
                     navigation_reference_heading_deg,
                     args.travel_distance_cm,
                     distance_estimate.travelled_cm,
@@ -2869,6 +3025,48 @@ def run_validation(args: argparse.Namespace) -> None:
                     )
                     visible_expected_direction = expected_steering_direction_from_error(
                         visible_position_error_px,
+                    )
+                    visible_orientation_direction = (
+                        calculate_orientation_steering_direction(
+                            visible_orientation_deg,
+                        )
+                    )
+                    visible_position_direction = calculate_position_steering_direction(
+                        visible_position_error_px,
+                    )
+                    visible_steering_relationship = calculate_steering_relationship(
+                        visible_orientation_direction,
+                        visible_position_direction,
+                    )
+                    steering_relationship_counts[visible_steering_relationship] += 1
+
+                    if (
+                        visible_steering_relationship == "OPPOSITE"
+                        and last_steering_relationship_by_tag.get(visible_tag_id)
+                        != "OPPOSITE"
+                    ):
+                        log_navigation_event(
+                            logger,
+                            "STEERING_CONFLICT",
+                            visible_tag_id,
+                            distance_estimate.travelled_cm,
+                            elapsed_time_sec,
+                            measurement.image_center_x,
+                            float(visible_detection["center_x"]),
+                            visible_orientation_deg,
+                            visible_position_error_px,
+                            visible_position_component_deg,
+                            visible_position_weight,
+                            visible_orientation_weight,
+                            visible_vision_error_deg,
+                            visible_relationship,
+                            visible_orientation_contribution_pct,
+                            visible_position_contribution_pct,
+                            visible_expected_direction,
+                            navigation_authority,
+                        )
+                    last_steering_relationship_by_tag[visible_tag_id] = (
+                        visible_steering_relationship
                     )
 
                     if visible_tag_id == 1:
@@ -3102,6 +3300,8 @@ def run_validation(args: argparse.Namespace) -> None:
                     pid_csv_visible_tag_ids -= lost_pid_csv_tag_ids
                     pid_csv_large_position_error_tag_ids -= lost_pid_csv_tag_ids
                     pid_csv_extreme_position_error_tag_ids -= lost_pid_csv_tag_ids
+                    for lost_tag_id in lost_pid_csv_tag_ids:
+                        last_steering_relationship_by_tag.pop(lost_tag_id, None)
 
                 if tag_visible and measurement.tag_id != last_logged_tag_id:
                     log_navigation_event(
@@ -3290,6 +3490,7 @@ def run_validation(args: argparse.Namespace) -> None:
                         position_component_samples,
                         vision_error_samples,
                         tag_transition_diagnostics,
+                        steering_relationship_counts,
                         navigation_reference_heading_deg,
                         args.travel_distance_cm,
                         distance_estimate.travelled_cm,
@@ -3362,6 +3563,7 @@ def run_validation(args: argparse.Namespace) -> None:
                     position_component_samples,
                     vision_error_samples,
                     tag_transition_diagnostics,
+                    steering_relationship_counts,
                     navigation_reference_heading_deg,
                     args.travel_distance_cm,
                     distance_estimate.travelled_cm,
