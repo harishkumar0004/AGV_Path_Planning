@@ -483,9 +483,18 @@ class PIDDistanceLogger:
                 "heading_delta_deg",
                 "travel_distance_between_tags_cm",
                 "predicted_lateral_drift_cm",
+                "tag1_exit_position_error_px",
+                "tag1_exit_orientation_deg",
+                "tag1_exit_vision_error_deg",
+                "tag1_exit_current_heading_deg",
+                "tag1_exit_distance_travelled_cm",
                 "carryover_last_vision_error_deg",
                 "carryover_last_valid_imu_heading_deg",
                 "carryover_new_imu_reference_heading_deg",
+                "tag2_first_position_error_px",
+                "tag2_first_orientation_deg",
+                "tag2_first_current_heading_deg",
+                "tag2_first_distance_travelled_cm",
             ]
         )
 
@@ -604,6 +613,15 @@ class PIDDistanceLogger:
                 "",
                 "",
                 "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
             ]
         )
 
@@ -673,9 +691,18 @@ class PIDDistanceLogger:
                 format_csv(summary.get("heading_delta_deg")),
                 format_csv(summary.get("travel_distance_between_tags_cm")),
                 format_csv(summary.get("predicted_lateral_drift_cm")),
+                format_csv(summary.get("tag1_exit_position_error_px")),
+                format_csv(summary.get("tag1_exit_orientation_deg")),
+                format_csv(summary.get("tag1_exit_vision_error_deg")),
+                format_csv(summary.get("tag1_exit_current_heading_deg")),
+                format_csv(summary.get("tag1_exit_distance_travelled_cm")),
                 "",
                 "",
                 "",
+                format_csv(summary.get("tag2_first_position_error_px")),
+                format_csv(summary.get("tag2_first_orientation_deg")),
+                format_csv(summary.get("tag2_first_current_heading_deg")),
+                format_csv(summary.get("tag2_first_distance_travelled_cm")),
             ]
         )
         self._csv_file.flush()
@@ -769,6 +796,15 @@ class PIDDistanceLogger:
                 format_csv(tag_center_x),
                 format_csv(tag_orientation_deg),
                 expected_position_steering_direction,
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
                 "",
                 "",
                 "",
@@ -875,9 +911,18 @@ class PIDDistanceLogger:
                 format_csv(heading_delta_deg),
                 format_csv(travel_distance_between_tags_cm),
                 format_csv(predicted_lateral_drift_cm),
+                format_csv(position_error_px if event_name == "TAG1_VISION_EXIT" else None),
+                format_csv(tag_orientation_deg if event_name == "TAG1_VISION_EXIT" else None),
+                format_csv(vision_error_deg if event_name == "TAG1_VISION_EXIT" else None),
+                format_csv(current_heading_deg if event_name == "TAG1_VISION_EXIT" else None),
+                format_csv(distance_travelled_cm if event_name == "TAG1_VISION_EXIT" else None),
                 "",
                 "",
                 "",
+                format_csv(position_error_px if event_name == "TAG2_FIRST_DETECTION" else None),
+                format_csv(tag_orientation_deg if event_name == "TAG2_FIRST_DETECTION" else None),
+                format_csv(current_heading_deg if event_name == "TAG2_FIRST_DETECTION" else None),
+                format_csv(distance_travelled_cm if event_name == "TAG2_FIRST_DETECTION" else None),
             ]
         )
         self._csv_file.flush()
@@ -958,9 +1003,18 @@ class PIDDistanceLogger:
                 "",
                 "",
                 "",
+                "",
+                "",
+                "",
+                "",
+                "",
                 format_csv(last_vision_error_deg),
                 format_csv(last_valid_imu_heading_deg),
                 format_csv(new_imu_reference_heading_deg),
+                "",
+                "",
+                "",
+                "",
             ]
         )
         self._csv_file.flush()
@@ -2109,6 +2163,32 @@ def print_run_summary(summary: dict[str, float | int | None]) -> None:
         format_display(summary.get("predicted_lateral_drift_cm"), " cm"),
     )
     print()
+    print(
+        "Tag1 Exit Position Error:",
+        format_display(summary.get("tag1_exit_position_error_px"), " px", decimals=0, signed=True),
+    )
+    print(
+        "Tag1 Exit Orientation:",
+        format_display(summary.get("tag1_exit_orientation_deg"), " deg", signed=True),
+    )
+    print(
+        "Tag1 Exit Vision Error:",
+        format_display(summary.get("tag1_exit_vision_error_deg"), " deg", signed=True),
+    )
+    print()
+    print(
+        "Tag2 First Position Error:",
+        format_display(summary.get("tag2_first_position_error_px"), " px", decimals=0, signed=True),
+    )
+    print(
+        "Tag2 First Orientation:",
+        format_display(summary.get("tag2_first_orientation_deg"), " deg", signed=True),
+    )
+    print(
+        "Tag2 First Heading:",
+        format_display(summary.get("tag2_first_current_heading_deg"), " deg", signed=True),
+    )
+    print()
     print("Total Runtime:", f"{summary['runtime_sec']:.2f} sec")
     print()
     print("==================================================")
@@ -2466,6 +2546,15 @@ def run_validation(args: argparse.Namespace) -> None:
         "heading_delta_deg": None,
         "travel_distance_between_tags_cm": None,
         "predicted_lateral_drift_cm": None,
+        "tag1_exit_position_error_px": None,
+        "tag1_exit_orientation_deg": None,
+        "tag1_exit_vision_error_deg": None,
+        "tag1_exit_current_heading_deg": None,
+        "tag1_exit_distance_travelled_cm": None,
+        "tag2_first_position_error_px": None,
+        "tag2_first_orientation_deg": None,
+        "tag2_first_current_heading_deg": None,
+        "tag2_first_distance_travelled_cm": None,
     }
     tag1_visible_previous = False
     tag1_exit_logged = False
@@ -2792,6 +2881,18 @@ def run_validation(args: argparse.Namespace) -> None:
                         tag_transition_diagnostics["tag2_first_heading_deg"] = (
                             current_heading_deg
                         )
+                        tag_transition_diagnostics["tag2_first_position_error_px"] = (
+                            visible_position_error_px
+                        )
+                        tag_transition_diagnostics["tag2_first_orientation_deg"] = (
+                            visible_orientation_deg
+                        )
+                        tag_transition_diagnostics["tag2_first_current_heading_deg"] = (
+                            current_heading_deg
+                        )
+                        tag_transition_diagnostics[
+                            "tag2_first_distance_travelled_cm"
+                        ] = distance_estimate.travelled_cm
                         log_tag_transition_event(
                             logger,
                             "TAG2_FIRST_DETECTION",
@@ -2967,6 +3068,21 @@ def run_validation(args: argparse.Namespace) -> None:
                     tag_transition_diagnostics["tag1_exit_heading_deg"] = (
                         current_heading_deg
                     )
+                    tag_transition_diagnostics["tag1_exit_position_error_px"] = (
+                        last_tag1_position_error_px
+                    )
+                    tag_transition_diagnostics["tag1_exit_orientation_deg"] = (
+                        last_tag1_orientation_deg
+                    )
+                    tag_transition_diagnostics["tag1_exit_vision_error_deg"] = (
+                        last_tag1_vision_error_deg
+                    )
+                    tag_transition_diagnostics["tag1_exit_current_heading_deg"] = (
+                        current_heading_deg
+                    )
+                    tag_transition_diagnostics[
+                        "tag1_exit_distance_travelled_cm"
+                    ] = distance_estimate.travelled_cm
                     log_tag_transition_event(
                         logger,
                         "TAG1_VISION_EXIT",
