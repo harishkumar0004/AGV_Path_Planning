@@ -501,6 +501,9 @@ class PIDDistanceLogger:
                 "same_direction_count",
                 "opposite_direction_count",
                 "neutral_count",
+                "vision_exit_error_deg",
+                "imu_heading_at_exit_deg",
+                "new_imu_reference_deg",
             ]
         )
 
@@ -642,6 +645,9 @@ class PIDDistanceLogger:
                 "",
                 "",
                 "",
+                "",
+                "",
+                "",
             ]
         )
 
@@ -729,6 +735,9 @@ class PIDDistanceLogger:
                 summary.get("same_direction_count", ""),
                 summary.get("opposite_direction_count", ""),
                 summary.get("neutral_count", ""),
+                "",
+                "",
+                "",
             ]
         )
         self._csv_file.flush()
@@ -857,6 +866,9 @@ class PIDDistanceLogger:
                 "",
                 "",
                 "",
+                "",
+                "",
+                "",
             ]
         )
         self._csv_file.flush()
@@ -972,6 +984,9 @@ class PIDDistanceLogger:
                 "",
                 "",
                 "",
+                "",
+                "",
+                "",
             ]
         )
         self._csv_file.flush()
@@ -1070,6 +1085,9 @@ class PIDDistanceLogger:
                 "",
                 "",
                 "",
+                format_csv(last_vision_error_deg),
+                format_csv(current_heading_deg),
+                format_csv(new_imu_reference_heading_deg),
             ]
         )
         self._csv_file.flush()
@@ -2602,6 +2620,20 @@ def log_vision_to_imu_carryover(
     print("VISION_TO_IMU_CARRYOVER")
     print("timestamp:", f"{timestamp_sec:.2f}")
     print("distance_travelled_cm:", f"{distance_travelled_cm:.2f}")
+    vision_exit_error = (
+        f"{last_vision_error_deg:.2f}" if last_vision_error_deg is not None else "None"
+    )
+    imu_heading_at_exit = (
+        f"{current_heading_deg:.2f}" if current_heading_deg is not None else "None"
+    )
+    new_imu_reference = (
+        f"{new_imu_reference_heading_deg:.2f}"
+        if new_imu_reference_heading_deg is not None
+        else "None"
+    )
+    print(f"Vision Exit Error = {vision_exit_error}°")
+    print(f"IMU Heading At Exit = {imu_heading_at_exit}°")
+    print(f"New IMU Reference = {new_imu_reference}°")
     print("current_heading_deg:", format_display(current_heading_deg, " deg", signed=True))
     print(
         "last_vision_error_deg:",
