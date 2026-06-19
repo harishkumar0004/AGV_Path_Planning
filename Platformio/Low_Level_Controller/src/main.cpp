@@ -55,15 +55,25 @@ bool alignEnabled = false;
 
 enum AlignState {
     WAIT_TAG,
-    ALIGN_YAW,
-    ALIGN_Y,
-    ALIGN_X,
-    FINAL_ALIGN,
+    ROUGH_YAW,
+    CENTER_Y_SAFE,
+    X_STEP_ROTATE,
+    X_STEP_CREEP,
+    X_STEP_STOP,
+    X_STEP_EVALUATE,
+    FINAL_Y,
+    FINAL_YAW,
     ALIGNED_STOP,
     LOST_TAG
 };
 
 AlignState alignState = WAIT_TAG;
+
+float xBeforeStep = 0.0f;
+float yBeforeStep = 0.0f;
+int xStepDirection = 1;
+bool xStepDirectionValid = false;
+unsigned long stateStartMs = 0;
 
 String inputLine = "";
 String lastRobotCommand = "STOP";
@@ -133,8 +143,16 @@ const char* robotMotionFromCommand(const String& command) {
     if (command == "COUNTER_CLOCKWISE") return "AGV_COUNTER_CLOCKWISE";
     if (command == "W_POSITIVE") return "AGV_CLOCKWISE_BY_W";
     if (command == "W_NEGATIVE") return "AGV_COUNTER_CLOCKWISE_BY_W";
-    if (command == "ALIGN_YAW_CW") return "ALIGN_ROTATING_CLOCKWISE";
-    if (command == "ALIGN_YAW_CCW") return "ALIGN_ROTATING_COUNTER_CLOCKWISE";
+    if (command == "ROUGH_YAW_CW") return "ROUGH_YAW_CLOCKWISE";
+    if (command == "ROUGH_YAW_CCW") return "ROUGH_YAW_COUNTER_CLOCKWISE";
+    if (command == "CENTER_Y_SAFE") return "CENTER_Y_SAFE_TRANSLATE";
+    if (command == "X_STEP_ROTATE") return "X_STEP_ROTATE_TO_OFFSET";
+    if (command == "X_STEP_CREEP") return "X_STEP_CREEP_FORWARD";
+    if (command == "X_STEP_STOP") return "X_STEP_STOPPED";
+    if (command == "X_STEP_EVALUATE") return "X_STEP_EVALUATE";
+    if (command == "FINAL_Y") return "FINAL_Y_TRANSLATE";
+    if (command == "FINAL_YAW") return "FINAL_YAW_ZERO";
+    if (command == "HARD_EDGE_STOP") return "HARD_EDGE_STOPPED";
     if (command == "ALIGN_STOP") return "ALIGN_STOPPED";
     if (command == "LEFT_ONLY") return "LEFT_WHEEL_ONLY_TEST";
     if (command == "RIGHT_ONLY") return "RIGHT_WHEEL_ONLY_TEST";
@@ -151,10 +169,14 @@ float clampFloat(float value, float minValue, float maxValue) {
 const char* alignStateName(AlignState state) {
     switch (state) {
         case WAIT_TAG: return "WAIT_TAG";
-        case ALIGN_YAW: return "ALIGN_YAW";
-        case ALIGN_Y: return "ALIGN_Y";
-        case ALIGN_X: return "ALIGN_X";
-        case FINAL_ALIGN: return "FINAL_ALIGN";
+        case ROUGH_YAW: return "ROUGH_YAW";
+        case CENTER_Y_SAFE: return "CENTER_Y_SAFE";
+        case X_STEP_ROTATE: return "X_STEP_ROTATE";
+        case X_STEP_CREEP: return "X_STEP_CREEP";
+        case X_STEP_STOP: return "X_STEP_STOP";
+        case X_STEP_EVALUATE: return "X_STEP_EVALUATE";
+        case FINAL_Y: return "FINAL_Y";
+        case FINAL_YAW: return "FINAL_YAW";
         case ALIGNED_STOP: return "ALIGNED_STOP";
         case LOST_TAG: return "LOST_TAG";
         default: return "UNKNOWN";
@@ -166,7 +188,15 @@ bool isTagTimedOut() {
 }
 
 bool isTagNearEdge() {
-    return fabs(tag.xNorm) > TAG_EDGE_LIMIT || fabs(tag.yNorm) > TAG_EDGE_LIMIT;
+    return fabs(tag.xNorm) > TAG_HARD_EDGE_LIMIT || fabs(tag.yNorm) > TAG_HARD_EDGE_LIMIT;
+}
+
+void resetXStepState() {
+    xBeforeStep = 0.0f;
+    yBeforeStep = 0.0f;
+    xStepDirection = 1;
+    xStepDirectionValid = false;
+    stateStartMs = 0;
 }
 
 // =====================================================
@@ -192,6 +222,12 @@ void printAlignBrief(float v, float w) {
     Serial.print(tag.yNorm, 3);
     Serial.print(" th=");
     Serial.print(tag.thetaDeg, 2);
+    Serial.print(" xBefore=");
+    Serial.print(xBeforeStep, 3);
+    Serial.print(" yBefore=");
+    Serial.print(yBeforeStep, 3);
+    Serial.print(" xDir=");
+    Serial.print(xStepDirection);
     Serial.print(" v=");
     Serial.print(v, 4);
     Serial.print(" w=");
@@ -216,6 +252,9 @@ void updateAlignmentController() {
 
     if (!tag.visible || isTagTimedOut()) {
         drive.stop();
+        lastAlignV = 999.0f;
+        lastAlignW = 999.0f;
+        resetXStepState();
         alignState = LOST_TAG;
         lastRobotCommand = "ALIGN_STOP";
         printAlignBrief(0.0f, 0.0f);
@@ -226,8 +265,11 @@ void updateAlignmentController() {
 
     if (tag.nearEdge) {
         drive.stop();
+        lastAlignV = 999.0f;
+        lastAlignW = 999.0f;
+        resetXStepState();
         alignState = LOST_TAG;
-        lastRobotCommand = "ALIGN_STOP";
+        lastRobotCommand = "HARD_EDGE_STOP";
         printAlignBrief(0.0f, 0.0f);
         return;
     }
@@ -236,65 +278,174 @@ void updateAlignmentController() {
     float w = 0.0f;
 
     float thetaControl = THETA_SIGN * tag.thetaDeg;
+    float xControl = X_SIGN * tag.xNorm;
+    float yControl = Y_SIGN * tag.yNorm;
 
-    // =================================================
-    // YAW ONLY FIRST
-    //
-    // Your verified signs:
-    // theta negative = AGV is clockwise from target
-    // theta positive = AGV is counter-clockwise from target
-    //
-    // Your motor convention:
-    // w positive = AGV clockwise
-    // w negative = AGV counter-clockwise
-    //
-    // Therefore:
-    // w = K_THETA * thetaControl
-    // with THETA_SIGN = +1.0 first.
-    // =================================================
-    // 1.Yaw correction
-    if (fabs(thetaControl) > THETA_TOL_DEG) {
-        alignState = ALIGN_YAW;
+    bool isXStepState =
+        alignState == X_STEP_ROTATE ||
+        alignState == X_STEP_CREEP ||
+        alignState == X_STEP_STOP ||
+        alignState == X_STEP_EVALUATE;
 
+    if (isXStepState && fabs(tag.yNorm) > Y_SAFE_LIMIT) {
+        drive.stop();
+        lastAlignV = 999.0f;
+        lastAlignW = 999.0f;
+        alignState = CENTER_Y_SAFE;
+        lastRobotCommand = "CENTER_Y_SAFE";
+        printAlignBrief(0.0f, 0.0f);
+        return;
+    }
+
+    if (alignState == X_STEP_ROTATE) {
+        float targetThetaDeg = xStepDirection * X_STEP_THETA_DEG;
+        float thetaError = targetThetaDeg - tag.thetaDeg;
+
+        if (fabs(thetaError) > THETA_TOL_DEG) {
+            v = 0.0f;
+            w = K_X_STEP_YAW * thetaError;
+            w = clampFloat(w, -W_X_STEP_MAX, W_X_STEP_MAX);
+
+            lastRobotCommand = "X_STEP_ROTATE";
+            sendAlignVelocity(v, w);
+            printAlignBrief(v, w);
+            return;
+        }
+
+        drive.stop();
+        lastAlignV = 999.0f;
+        lastAlignW = 999.0f;
+        stateStartMs = now;
+        alignState = X_STEP_CREEP;
+        lastRobotCommand = "X_STEP_STOP";
+        printAlignBrief(0.0f, 0.0f);
+        return;
+    }
+
+    if (alignState == X_STEP_CREEP) {
+        if (now - stateStartMs < X_STEP_CREEP_MS) {
+            v = V_X_STEP;
+            w = 0.0f;
+
+            lastRobotCommand = "X_STEP_CREEP";
+            sendAlignVelocity(v, w);
+            printAlignBrief(v, w);
+            return;
+        }
+
+        drive.stop();
+        lastAlignV = 999.0f;
+        lastAlignW = 999.0f;
+        stateStartMs = now;
+        alignState = X_STEP_STOP;
+        lastRobotCommand = "X_STEP_STOP";
+        printAlignBrief(0.0f, 0.0f);
+        return;
+    }
+
+    if (alignState == X_STEP_STOP) {
+        drive.stop();
+        lastAlignV = 999.0f;
+        lastAlignW = 999.0f;
+        lastRobotCommand = "X_STEP_STOP";
+
+        if (now - stateStartMs >= X_STEP_SETTLE_MS) {
+            alignState = X_STEP_EVALUATE;
+        }
+
+        printAlignBrief(0.0f, 0.0f);
+        return;
+    }
+
+    if (alignState == X_STEP_EVALUATE) {
+        float xImprovement = fabs(xBeforeStep) - fabs(tag.xNorm);
+
+        if (xImprovement < 0.01f) {
+            xStepDirection = -xStepDirection;
+        }
+
+        alignState = WAIT_TAG;
+        lastRobotCommand = "X_STEP_EVALUATE";
+        printAlignBrief(0.0f, 0.0f);
+    }
+
+    if (fabs(thetaControl) > ROUGH_THETA_TOL_DEG) {
+        alignState = ROUGH_YAW;
+
+        v = 0.0f;
         w = K_THETA * thetaControl;
         w = clampFloat(w, -W_ALIGN_MAX, W_ALIGN_MAX);
 
-        v = 0.0f;
-
         if (w > 0.0f) {
-            lastRobotCommand = "ALIGN_YAW_CW";
+            lastRobotCommand = "ROUGH_YAW_CW";
         } else {
-            lastRobotCommand = "ALIGN_YAW_CCW";
+            lastRobotCommand = "ROUGH_YAW_CCW";
         }
-
         sendAlignVelocity(v, w);
         printAlignBrief(v, w);
         return;
     }
-    // 2. Y correction
 
-    float yControl = Y_SIGN * tag.yNorm;
-
-    if (fabs(yControl) > Y_TOL_NORM) {
-        alignState = ALIGN_Y;
+    if (fabs(tag.yNorm) > Y_SAFE_LIMIT) {
+        alignState = CENTER_Y_SAFE;
 
         v = KY * yControl;
         v = clampFloat(v, -V_ALIGN_MAX, V_ALIGN_MAX);
-
         w = 0.0f;
 
-        if (v > 0.0f) {
-            lastRobotCommand = "FORWARD";
-        } else {
-            lastRobotCommand = "BACKWARD";
-        }
-
+        lastRobotCommand = "CENTER_Y_SAFE";
         sendAlignVelocity(v, w);
         printAlignBrief(v, w);
         return;
     }
 
-    // 3. X correction
+    if (fabs(xControl) > X_TOL_NORM) {
+        xBeforeStep = tag.xNorm;
+        yBeforeStep = tag.yNorm;
+
+        if (!xStepDirectionValid) {
+            if (xControl > 0.0f) {
+                xStepDirection = 1;
+            } else {
+                xStepDirection = -1;
+            }
+            xStepDirectionValid = true;
+        }
+
+        stateStartMs = now;
+        alignState = X_STEP_ROTATE;
+        lastRobotCommand = "X_STEP_ROTATE";
+        printAlignBrief(0.0f, 0.0f);
+        return;
+    }
+
+    if (fabs(yControl) > Y_TOL_NORM) {
+        alignState = FINAL_Y;
+
+        v = KY * yControl;
+        v = clampFloat(v, -V_ALIGN_MAX, V_ALIGN_MAX);
+        w = 0.0f;
+
+        lastRobotCommand = "FINAL_Y";
+        sendAlignVelocity(v, w);
+        printAlignBrief(v, w);
+        return;
+    }
+
+    if (fabs(thetaControl) > THETA_TOL_DEG) {
+        alignState = FINAL_YAW;
+
+        v = 0.0f;
+        w = K_THETA_FINAL * thetaControl;
+        w = clampFloat(w, -W_FINAL_MAX, W_FINAL_MAX);
+
+        lastRobotCommand = "FINAL_YAW";
+        sendAlignVelocity(v, w);
+        printAlignBrief(v, w);
+        return;
+    }
+
+    xStepDirectionValid = false;
     alignState = ALIGNED_STOP;
     lastRobotCommand = "ALIGN_STOP";
 
@@ -459,6 +610,9 @@ bool handleTagCommand(const String& cmd) {
 
         if (alignEnabled) {
             drive.stop();
+            lastAlignV = 999.0f;
+            lastAlignW = 999.0f;
+            resetXStepState();
             alignState = LOST_TAG;
             lastRobotCommand = "ALIGN_STOP";
         }
@@ -522,6 +676,9 @@ void handleCommand(String cmd) {
     if (cmd == "S" || cmd == "STOP") {
         alignEnabled = false;
         drive.stop();
+        lastAlignV = 999.0f;
+        lastAlignW = 999.0f;
+        resetXStepState();
         alignState = WAIT_TAG;
         lastRobotCommand = "STOP";
         Serial.println("STOP + ALIGN DISABLED");
@@ -536,6 +693,9 @@ void handleCommand(String cmd) {
 
     if (cmd == "ALIGN ON") {
         alignEnabled = true;
+        lastAlignV = 999.0f;
+        lastAlignW = 999.0f;
+        resetXStepState();
         alignState = WAIT_TAG;
         lastRobotCommand = "ALIGN_STOP";
         Serial.println("ALIGN ENABLED");
@@ -545,6 +705,9 @@ void handleCommand(String cmd) {
     if (cmd == "ALIGN OFF") {
         alignEnabled = false;
         drive.stop();
+        lastAlignV = 999.0f;
+        lastAlignW = 999.0f;
+        resetXStepState();
         alignState = WAIT_TAG;
         lastRobotCommand = "STOP";
         Serial.println("ALIGN DISABLED + STOP");

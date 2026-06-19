@@ -18,26 +18,34 @@ constexpr float MAX_TEST_RPM = 30.0f;
 // Local AprilTag alignment
 
 constexpr float THETA_SIGN = 1.0f;
-constexpr float X_SIGN = 1.0f;
+constexpr float X_SIGN = -1.0f;
 constexpr float Y_SIGN = 1.0f;
 
 constexpr float K_THETA = 0.008f;      // rad/s per degree
 constexpr float K_THETA_FINAL = 0.004f;
 
-constexpr float KX = 0.0f;
 constexpr float KY = 0.010f;
+constexpr float K_X_STEP_YAW = 0.008f;       // yaw control during rotate-to-offset
 
 constexpr float W_ALIGN_MAX = 0.06f;   // slow
 constexpr float W_FINAL_MAX = 0.04f;
+constexpr float W_X_STEP_MAX = 0.04f;
 
 constexpr float V_ALIGN_MAX = 0.006f;
-constexpr float V_CREEP = 0.0f;
+constexpr float V_X_STEP = 0.002f;
 
 constexpr float THETA_TOL_DEG = 1.0f;
-constexpr float X_TOL_NORM = 0.06f;
+constexpr float ROUGH_THETA_TOL_DEG = 8.0f;
+constexpr float X_TOL_NORM = 0.05f;
 constexpr float Y_TOL_NORM = 0.05f;
+constexpr float X_SAFE_LIMIT = 0.30f;
+constexpr float Y_SAFE_LIMIT = 0.25f;
 
-constexpr float TAG_EDGE_LIMIT = 0.80f;  // stop if abs(x/y) too large
+constexpr float X_STEP_THETA_DEG = 4.0f;      // intentional heading offset
+constexpr unsigned long X_STEP_CREEP_MS = 180;
+constexpr unsigned long X_STEP_SETTLE_MS = 250;
+
+constexpr float TAG_HARD_EDGE_LIMIT = 0.70f;  // stop if abs(x/y) too large
 constexpr unsigned long TAG_TIMEOUT_MS = 600;
 
 // ESP32 motor timer
@@ -91,6 +99,3 @@ inline uint32_t hzToTimerTicks(float hz){
     if(ticks < 2) ticks = 2;
     return ticks;
 }
-
-
-
