@@ -22,6 +22,7 @@ TAG_SIZE_M = 0.020
 APPROX_FX = 700.0
 APPROX_FY = 700.0
 DIST_COEFFS = np.zeros((5, 1), dtype=np.float32)
+intrinsics_printed = False
 TAG_OBJECT_POINTS = np.array(
     [
         [-TAG_SIZE_M / 2.0, -TAG_SIZE_M / 2.0, 0.0],
@@ -56,44 +57,52 @@ def build_camera_matrix(frame_width, frame_height):
     )
 
 
+def print_camera_intrinsics_once(frame_width, frame_height, camera_matrix):
+    global intrinsics_printed
+
+    if intrinsics_printed:
+        return
+
+    intrinsics_printed = True
+    print(
+        "CAMERA_INTRINSICS "
+        f"fx={camera_matrix[0, 0]:.2f} fy={camera_matrix[1, 1]:.2f} "
+        f"cx={camera_matrix[0, 2]:.2f} cy={camera_matrix[1, 2]:.2f} "
+        f"frame_width={frame_width} frame_height={frame_height}"
+    )
+
+
 def estimate_tag_pose(detection, frame_width, frame_height):
     image_points = np.array(detection["corners"], dtype=np.float32)
+    object_points = np.array(TAG_OBJECT_POINTS, dtype=np.float32)
     camera_matrix = build_camera_matrix(frame_width, frame_height)
+    print_camera_intrinsics_once(frame_width, frame_height, camera_matrix)
 
-    def solve_with_flag(flag):
-        return cv2.solvePnP(
-            TAG_OBJECT_POINTS,
+    try:
+        retval, rvec, tvec = cv2.solvePnP(
+            object_points,
             image_points,
             camera_matrix,
             DIST_COEFFS,
-            flags=flag,
+            flags=cv2.SOLVEPNP_ITERATIVE,
         )
-
-    try:
-        retval, rvec, tvec = solve_with_flag(cv2.SOLVEPNP_IPPE_SQUARE)
-    except cv2.error:
-        retval = False
-        rvec = None
-        tvec = None
+    except cv2.error as error:
+        print(f"TAGPOSE solvePnP failed for id={detection['tag_id']}: {error}")
+        return None
 
     if not retval:
-        try:
-            retval, rvec, tvec = solve_with_flag(cv2.SOLVEPNP_ITERATIVE)
-        except cv2.error as error:
-            print(f"TAGPOSE solvePnP failed for id={detection['tag_id']}: {error}")
-            return None
-
-    if not retval or rvec is None or tvec is None:
         return None
 
     rotation_matrix, _ = cv2.Rodrigues(rvec)
     yaw_deg = math.degrees(math.atan2(rotation_matrix[1, 0], rotation_matrix[0, 0]))
+    z_m = float(tvec[2][0])
 
     return {
         "x_m": float(tvec[0][0]),
         "y_m": float(tvec[1][0]),
-        "z_m": float(tvec[2][0]),
+        "z_m": z_m,
         "yaw_deg": float(yaw_deg),
+        "valid": 0.05 <= z_m <= 0.25,
     }
 
 
@@ -124,9 +133,15 @@ def print_detection_log(detection):
         return
 
     print(
-        f"TAGPOSE_RAW {tag_id} {pose['x_m']:.4f} {pose['y_m']:.4f} "
-        f"{pose['z_m']:.4f} {pose['yaw_deg']:.2f}"
+        f"TAGPOSE_RAW id={tag_id} x_cam={pose['x_m']:.4f} "
+        f"y_cam={pose['y_m']:.4f} z_cam={pose['z_m']:.4f} "
+        f"yaw={pose['yaw_deg']:.2f}"
     )
+
+    if not pose["valid"]:
+        print(f"TAGPOSE_INVALID id={tag_id} z_cam={pose['z_m']:.4f}")
+        return
+
     print(
         f"TAGPOSE {tag_id} {pose['x_m']:.4f} {pose['y_m']:.4f} "
         f"{pose['yaw_deg']:.2f}"
@@ -233,7 +248,7 @@ def main():
                     ser.write(cmd.encode("utf-8"))
 
                     pose = detection.get("pose")
-                    if SEND_TAGPOSE_TO_ESP32 and pose is not None:
+                    if SEND_TAGPOSE_TO_ESP32 and pose is not None and pose["valid"]:
                         pose_cmd = (
                             f"TAGPOSE {tag_id} {pose['x_m']:.4f} "
                             f"{pose['y_m']:.4f} {pose['yaw_deg']:.2f}\n"
