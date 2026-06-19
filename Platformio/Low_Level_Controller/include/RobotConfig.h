@@ -15,6 +15,31 @@ constexpr float PULSES_PER_METER = PULSES_PER_REV / WHEEL_CIRCUMFERENCE_M;
 constexpr float DEFAULT_TEST_RPM = 1.0f;
 constexpr float MAX_TEST_RPM = 30.0f;
 
+// Local AprilTag alignment
+
+constexpr float THETA_SIGN = 1.0f;
+constexpr float X_SIGN = 1.0f;
+constexpr float Y_SIGN = 1.0f;
+
+constexpr float K_THETA = 0.008f;      // rad/s per degree
+constexpr float K_THETA_FINAL = 0.004f;
+
+constexpr float KX = 0.0f;
+constexpr float KY = 0.010f;
+
+constexpr float W_ALIGN_MAX = 0.06f;   // slow
+constexpr float W_FINAL_MAX = 0.04f;
+
+constexpr float V_ALIGN_MAX = 0.006f;
+constexpr float V_CREEP = 0.0f;
+
+constexpr float THETA_TOL_DEG = 1.0f;
+constexpr float X_TOL_NORM = 0.06f;
+constexpr float Y_TOL_NORM = 0.05f;
+
+constexpr float TAG_EDGE_LIMIT = 0.80f;  // stop if abs(x/y) too large
+constexpr unsigned long TAG_TIMEOUT_MS = 600;
+
 // ESP32 motor timer
 // 20 us interrupt = 50 kHz timer rate
 

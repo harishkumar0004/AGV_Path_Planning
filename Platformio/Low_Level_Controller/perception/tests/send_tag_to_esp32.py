@@ -12,7 +12,7 @@ BAUD_RATE = 115200
 
 SEND_ALIGN_ON_AT_START = False   # keep False first for safety
 SEND_RATE_HZ = 15.0              # do not spam ESP32 too fast
-
+LOST_DELAY_SEC = 0.30            # wait 300 ms before declaring lost
 
 def calculate_tag_area(corners):
     pts = np.array(corners, dtype=np.float32)
@@ -75,6 +75,7 @@ def main():
         print("Sent: ALIGN OFF for safe sign checking")
 
     last_send_time = 0.0
+    last_seen_time = time.monotonic()
     lost_sent = False
 
     try:
@@ -95,6 +96,9 @@ def main():
             should_send = (now - last_send_time) >= (1.0 / SEND_RATE_HZ)
 
             if detection is not None:
+                last_seen_time = now
+                lost_sent = False
+
                 tag_id = detection["tag_id"]
                 tag_center_x = detection["center_x"]
                 tag_center_y = detection["center_y"]
@@ -114,15 +118,13 @@ def main():
                     ser.write(cmd.encode("utf-8"))
                     print(cmd.strip())
                     last_send_time = now
-                    lost_sent = False
 
                 draw_debug(frame, detection, x_norm, y_norm, theta_deg)
 
             else:
-                if should_send and not lost_sent:
+                if now - last_seen_time > LOST_DELAY_SEC and not lost_sent:
                     ser.write(b"TAG LOST\n")
                     print("TAG LOST")
-                    last_send_time = now
                     lost_sent = True
 
             cv2.imshow("AGV AprilTag Serial Sender", frame)
