@@ -19,8 +19,8 @@ SEND_TAGPOSE_TO_ESP32 = False
 TAG_SIZE_M = 0.020
 # Temporary approximate intrinsics for Raspberry Pi Camera Module v2.
 # Replace these with calibrated camera_matrix and dist_coeffs later.
-APPROX_FX = 700.0
-APPROX_FY = 700.0
+APPROX_FX = 1330.0
+APPROX_FY = 1330.0
 DIST_COEFFS = np.zeros((5, 1), dtype=np.float32)
 intrinsics_printed = False
 TAG_OBJECT_POINTS = np.array(
@@ -45,6 +45,14 @@ def choose_best_detection(detections):
 
     # Pick largest visible tag area. Good for floor tag when only one should matter.
     return max(detections, key=lambda d: calculate_tag_area(d["corners"]))
+
+
+def normalize_angle_deg(angle):
+    while angle > 180.0:
+        angle -= 360.0
+    while angle < -180.0:
+        angle += 360.0
+    return angle
 
 
 def build_camera_matrix(frame_width, frame_height):
@@ -94,14 +102,18 @@ def estimate_tag_pose(detection, frame_width, frame_height):
         return None
 
     rotation_matrix, _ = cv2.Rodrigues(rvec)
-    yaw_deg = math.degrees(math.atan2(rotation_matrix[1, 0], rotation_matrix[0, 0]))
+    yaw_raw_deg = math.degrees(
+        math.atan2(rotation_matrix[1, 0], rotation_matrix[0, 0])
+    )
+    yaw_corrected_deg = normalize_angle_deg(yaw_raw_deg - 180.0)
     z_m = float(tvec[2][0])
 
     return {
         "x_m": float(tvec[0][0]),
         "y_m": float(tvec[1][0]),
         "z_m": z_m,
-        "yaw_deg": float(yaw_deg),
+        "yaw_raw_deg": float(yaw_raw_deg),
+        "yaw_deg": float(yaw_corrected_deg),
         "valid": 0.05 <= z_m <= 0.25,
     }
 
@@ -135,7 +147,7 @@ def print_detection_log(detection):
     print(
         f"TAGPOSE_RAW id={tag_id} x_cam={pose['x_m']:.4f} "
         f"y_cam={pose['y_m']:.4f} z_cam={pose['z_m']:.4f} "
-        f"yaw={pose['yaw_deg']:.2f}"
+        f"yaw_raw={pose['yaw_raw_deg']:.2f}"
     )
 
     if not pose["valid"]:
@@ -143,8 +155,9 @@ def print_detection_log(detection):
         return
 
     print(
-        f"TAGPOSE {tag_id} {pose['x_m']:.4f} {pose['y_m']:.4f} "
-        f"{pose['yaw_deg']:.2f}"
+        f"TAGPOSE id={tag_id} x_m={pose['x_m']:.4f} "
+        f"y_m={pose['y_m']:.4f} z_m={pose['z_m']:.4f} "
+        f"yaw={pose['yaw_deg']:.2f}"
     )
 
 
