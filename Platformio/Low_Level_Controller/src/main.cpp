@@ -66,7 +66,8 @@ enum AlignInputMode {
     ALIGN_INPUT_POSE,
     ALIGN_INPUT_POSE_TRACK,
     ALIGN_INPUT_POSE_GEOMETRIC,
-    ALIGN_INPUT_POSE_PRIMITIVE
+    ALIGN_INPUT_POSE_PRIMITIVE,
+    ALIGN_INPUT_POSE_TRIAL
 };
 
 AlignInputMode alignInputMode = ALIGN_INPUT_PIXEL;
@@ -128,6 +129,49 @@ float ppSelectedW = 0.0f;
 const char* ppSelectedName = "NONE";
 float ppSelectedCost = 0.0f;
 unsigned long lastPosePrimitivePrintMs = 0;
+
+enum PoseTrialState {
+    PT_OBSERVE,
+    PT_EXECUTE,
+    PT_SETTLE,
+    PT_EVALUATE,
+    PT_FINAL_YAW,
+    PT_ALIGNED,
+    PT_LOST,
+    PT_UNSAFE
+};
+
+struct TrialPrimitive {
+    float v;
+    float w;
+    const char* name;
+};
+
+TrialPrimitive trialPrimitives[] = {
+    {     POSE_TRIAL_V,             0.0f, "FWD" },
+    {    -POSE_TRIAL_V,             0.0f, "BACK" },
+    {     POSE_TRIAL_V,      POSE_TRIAL_W, "FWD_CW" },
+    {     POSE_TRIAL_V,     -POSE_TRIAL_W, "FWD_CCW" },
+    {    -POSE_TRIAL_V,      POSE_TRIAL_W, "BACK_CW" },
+    {    -POSE_TRIAL_V,     -POSE_TRIAL_W, "BACK_CCW" },
+    {            0.0f,      POSE_TRIAL_W, "ROT_CW" },
+    {            0.0f,     -POSE_TRIAL_W, "ROT_CCW" }
+};
+
+PoseTrialState ptState = PT_OBSERVE;
+unsigned long ptStateStartMs = 0;
+
+float ptBeforeCost = 0.0f;
+float ptBeforeX = 0.0f;
+float ptBeforeY = 0.0f;
+float ptBeforeYaw = 0.0f;
+float ptNewCost = 0.0f;
+
+int ptPrimitiveIndex = 0;
+float ptSelectedV = 0.0f;
+float ptSelectedW = 0.0f;
+const char* ptSelectedName = "NONE";
+unsigned long lastPoseTrialPrintMs = 0;
 
 enum AlignState {
     WAIT_TAG,
@@ -286,6 +330,7 @@ const char* alignInputModeName() {
         case ALIGN_INPUT_POSE_TRACK: return "TRACK";
         case ALIGN_INPUT_POSE_GEOMETRIC: return "GEOMETRIC";
         case ALIGN_INPUT_POSE_PRIMITIVE: return "PRIMITIVE";
+        case ALIGN_INPUT_POSE_TRIAL: return "TRIAL";
         default: return "UNKNOWN";
     }
 }
@@ -312,6 +357,20 @@ const char* posePrimitiveStateName(PosePrimitiveState state) {
         case PP_ALIGNED: return "ALIGNED";
         case PP_LOST: return "LOST";
         case PP_UNSAFE: return "UNSAFE";
+        default: return "UNKNOWN";
+    }
+}
+
+const char* poseTrialStateName(PoseTrialState state) {
+    switch (state) {
+        case PT_OBSERVE: return "OBSERVE";
+        case PT_EXECUTE: return "EXECUTE";
+        case PT_SETTLE: return "SETTLE";
+        case PT_EVALUATE: return "EVALUATE";
+        case PT_FINAL_YAW: return "FINAL_YAW";
+        case PT_ALIGNED: return "ALIGNED";
+        case PT_LOST: return "LOST";
+        case PT_UNSAFE: return "UNSAFE";
         default: return "UNKNOWN";
     }
 }
@@ -1285,7 +1344,204 @@ void updatePosePrimitiveController() {
     printPosePrimitiveBrief(x, y, yaw);
 }
 
+float positionCost(float x, float y, float yaw) {
+    return
+        POSE_TRIAL_WX * fabs(x) +
+        POSE_TRIAL_WY * fabs(y) +
+        POSE_TRIAL_WYAW_POSITION * fabs(yaw);
+}
+
+float finalCost(float x, float y, float yaw) {
+    return
+        POSE_TRIAL_WX * fabs(x) +
+        POSE_TRIAL_WY * fabs(y) +
+        POSE_TRIAL_WYAW_FINAL * fabs(yaw);
+}
+
+void printPoseTrialBrief(float x, float y, float yaw) {
+    unsigned long now = millis();
+    if (now - lastPoseTrialPrintMs < 200) {
+        return;
+    }
+    lastPoseTrialPrintMs = now;
+
+    Serial.print("POSE_TRIAL state=");
+    Serial.print(poseTrialStateName(ptState));
+    Serial.print(" xM=");
+    Serial.print(x, 4);
+    Serial.print(" yM=");
+    Serial.print(y, 4);
+    Serial.print(" yaw=");
+    Serial.print(yaw, 2);
+    Serial.print(" beforeCost=");
+    Serial.print(ptBeforeCost, 4);
+    Serial.print(" newCost=");
+    Serial.print(ptNewCost, 4);
+    Serial.print(" selected=");
+    Serial.print(ptSelectedName);
+    Serial.print(" v=");
+    Serial.print(ptSelectedV, 4);
+    Serial.print(" w=");
+    Serial.print(ptSelectedW, 4);
+    Serial.print(" primitiveIndex=");
+    Serial.println(ptPrimitiveIndex);
+}
+
+void updatePoseTrialController() {
+    if (!alignEnabled) {
+        drive.stop();
+        ptState = PT_OBSERVE;
+        return;
+    }
+
+    float x = pose.xM;
+    float y = pose.yM;
+    float yaw = pose.yawDeg;
+
+    if (!pose.visible || isPoseTimedOut()) {
+        drive.stop();
+        ptState = PT_LOST;
+        printPoseTrialBrief(x, y, yaw);
+        return;
+    }
+
+    float absX = fabs(x);
+    float absY = fabs(y);
+    float absYaw = fabs(yaw);
+    float dist = sqrt(x * x + y * y);
+
+    if (absX > POSE_TRIAL_UNSAFE_X_M ||
+        absY > POSE_TRIAL_UNSAFE_Y_M ||
+        absYaw > POSE_TRIAL_UNSAFE_YAW_DEG) {
+        drive.stop();
+        ptState = PT_UNSAFE;
+        printPoseTrialBrief(x, y, yaw);
+        return;
+    }
+
+    unsigned long now = millis();
+
+    switch (ptState) {
+        case PT_OBSERVE: {
+            drive.stop();
+
+            if (absX < POSE_TRIAL_XY_TOL_M &&
+                absY < POSE_TRIAL_XY_TOL_M &&
+                absYaw < POSE_TRIAL_YAW_TOL_DEG) {
+                ptState = PT_ALIGNED;
+                ptSelectedV = 0.0f;
+                ptSelectedW = 0.0f;
+                ptSelectedName = "STOP";
+                break;
+            }
+
+            if (dist < POSE_TRIAL_POSITION_READY_M &&
+                absYaw >= POSE_TRIAL_YAW_TOL_DEG) {
+                ptState = PT_FINAL_YAW;
+                ptStateStartMs = now;
+                break;
+            }
+
+            ptBeforeX = x;
+            ptBeforeY = y;
+            ptBeforeYaw = yaw;
+            ptBeforeCost = positionCost(x, y, yaw);
+            ptNewCost = ptBeforeCost;
+
+            const int primitiveCount =
+                sizeof(trialPrimitives) / sizeof(trialPrimitives[0]);
+            if (ptPrimitiveIndex < 0 || ptPrimitiveIndex >= primitiveCount) {
+                ptPrimitiveIndex = 0;
+            }
+
+            ptSelectedV = trialPrimitives[ptPrimitiveIndex].v;
+            ptSelectedW = trialPrimitives[ptPrimitiveIndex].w;
+            ptSelectedName = trialPrimitives[ptPrimitiveIndex].name;
+            ptState = PT_EXECUTE;
+            ptStateStartMs = now;
+            break;
+        }
+
+        case PT_EXECUTE:
+            drive.setRobotVelocity(ptSelectedV, ptSelectedW);
+            if (now - ptStateStartMs >= POSE_TRIAL_EXEC_MS) {
+                drive.stop();
+                ptState = PT_SETTLE;
+                ptStateStartMs = now;
+            }
+            break;
+
+        case PT_SETTLE:
+            drive.stop();
+            if (now - ptStateStartMs >= POSE_TRIAL_SETTLE_MS) {
+                ptState = PT_EVALUATE;
+                ptStateStartMs = now;
+            }
+            break;
+
+        case PT_EVALUATE: {
+            drive.stop();
+            ptNewCost = positionCost(x, y, yaw);
+
+            if (ptNewCost >= ptBeforeCost - POSE_TRIAL_MIN_IMPROVE) {
+                const int primitiveCount =
+                    sizeof(trialPrimitives) / sizeof(trialPrimitives[0]);
+                ptPrimitiveIndex = (ptPrimitiveIndex + 1) % primitiveCount;
+            }
+
+            ptState = PT_OBSERVE;
+            ptStateStartMs = now;
+            break;
+        }
+
+        case PT_FINAL_YAW:
+            if (dist > POSE_TRIAL_POSITION_READY_M + 0.002f) {
+                drive.stop();
+                ptState = PT_OBSERVE;
+                ptStateStartMs = now;
+                break;
+            }
+
+            if (absYaw < POSE_TRIAL_YAW_TOL_DEG) {
+                drive.stop();
+                ptState = PT_OBSERVE;
+                ptStateStartMs = now;
+                break;
+            }
+
+            ptSelectedV = 0.0f;
+            ptSelectedW = 0.004f * THETA_SIGN * yaw;
+            ptSelectedW = clampFloat(ptSelectedW, -0.025f, 0.025f);
+            ptSelectedName = "FINAL_YAW";
+            ptNewCost = finalCost(x, y, yaw);
+            drive.setRobotVelocity(ptSelectedV, ptSelectedW);
+            break;
+
+        case PT_ALIGNED:
+            drive.stop();
+            if (absX >= POSE_TRIAL_XY_TOL_M ||
+                absY >= POSE_TRIAL_XY_TOL_M ||
+                absYaw >= POSE_TRIAL_YAW_TOL_DEG) {
+                ptState = PT_OBSERVE;
+                ptStateStartMs = now;
+            }
+            break;
+
+        case PT_LOST:
+        case PT_UNSAFE:
+            drive.stop();
+            break;
+    }
+
+    printPoseTrialBrief(x, y, yaw);
+}
+
 void updateAlignmentController() {
+    if (alignInputMode == ALIGN_INPUT_POSE_TRIAL) {
+        updatePoseTrialController();
+        return;
+    }
+
     if (alignInputMode == ALIGN_INPUT_POSE_PRIMITIVE) {
         updatePosePrimitiveController();
         return;
@@ -1341,6 +1597,7 @@ void printHelp() {
     Serial.println("  ALIGN MODE TRACK");
     Serial.println("  ALIGN MODE GEOMETRIC");
     Serial.println("  ALIGN MODE PRIMITIVE");
+    Serial.println("  ALIGN MODE TRIAL");
     Serial.println("  TAG <id> <x_norm> <y_norm> <theta_deg>");
     Serial.println("  TAGPOSE <id> <x_m> <y_m> <yaw_deg>");
     Serial.println("  TAG LOST");
@@ -1665,6 +1922,30 @@ void handleCommand(String cmd) {
         alignState = WAIT_TAG;
         lastRobotCommand = "ALIGN_STOP";
         Serial.println("ALIGN INPUT MODE: PRIMITIVE");
+        return;
+    }
+
+    if (cmd == "ALIGN MODE TRIAL") {
+        alignInputMode = ALIGN_INPUT_POSE_TRIAL;
+        drive.stop();
+        lastAlignV = 999.0f;
+        lastAlignW = 999.0f;
+        resetXStepState();
+        resetPoseXStepState();
+        ptState = PT_OBSERVE;
+        ptStateStartMs = millis();
+        ptBeforeCost = 0.0f;
+        ptBeforeX = 0.0f;
+        ptBeforeY = 0.0f;
+        ptBeforeYaw = 0.0f;
+        ptNewCost = 0.0f;
+        ptPrimitiveIndex = 0;
+        ptSelectedV = 0.0f;
+        ptSelectedW = 0.0f;
+        ptSelectedName = "NONE";
+        alignState = WAIT_TAG;
+        lastRobotCommand = "ALIGN_STOP";
+        Serial.println("ALIGN INPUT MODE: TRIAL");
         return;
     }
 

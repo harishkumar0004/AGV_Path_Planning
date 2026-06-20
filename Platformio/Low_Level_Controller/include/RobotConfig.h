@@ -140,6 +140,30 @@ constexpr float POSE_PRIM_WEDGE = 20.0f;
 constexpr float POSE_PRIM_EDGE_X_M = 0.014f;
 constexpr float POSE_PRIM_EDGE_Y_M = 0.014f;
 
+// Measured trial-and-observe pose alignment
+
+constexpr float POSE_TRIAL_XY_TOL_M = 0.0025f;
+constexpr float POSE_TRIAL_YAW_TOL_DEG = 1.0f;
+
+constexpr float POSE_TRIAL_UNSAFE_X_M = 0.018f;
+constexpr float POSE_TRIAL_UNSAFE_Y_M = 0.018f;
+constexpr float POSE_TRIAL_UNSAFE_YAW_DEG = 60.0f;
+
+constexpr float POSE_TRIAL_V = 0.0020f;
+constexpr float POSE_TRIAL_W = 0.025f;
+
+constexpr unsigned long POSE_TRIAL_EXEC_MS = 120;
+constexpr unsigned long POSE_TRIAL_SETTLE_MS = 250;
+
+constexpr float POSE_TRIAL_MIN_IMPROVE = 0.0005f;
+
+constexpr float POSE_TRIAL_WX = 5.0f;
+constexpr float POSE_TRIAL_WY = 5.0f;
+constexpr float POSE_TRIAL_WYAW_POSITION = 0.02f;
+constexpr float POSE_TRIAL_WYAW_FINAL = 0.10f;
+
+constexpr float POSE_TRIAL_POSITION_READY_M = 0.0040f;
+
 // ESP32 motor timer
 // 20 us interrupt = 50 kHz timer rate
 
