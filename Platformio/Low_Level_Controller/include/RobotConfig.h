@@ -169,6 +169,12 @@ constexpr float POSE_TRIAL_POSITION_READY_M = 0.0040f;
 constexpr int NAV_FIRST_TAG_ID = 0;
 constexpr int NAV_FINAL_TAG_ID = 1;
 constexpr bool NAV_USE_IMU_HEADING = false;
+constexpr bool NAV_BYPASS_START_LOCAL_ALIGN = true;
+
+constexpr float NAV_START_GATE_X_M = 0.012f;
+constexpr float NAV_START_GATE_Y_M = 0.012f;
+constexpr float NAV_START_GATE_YAW_DEG = 8.0f;
+constexpr unsigned long NAV_START_GATE_STABLE_MS = 300;
 
 constexpr float NAV_TAG_SPACING_M = 0.50f;
 constexpr float NAV_TEST_V_MAX_MPS = 0.025f;

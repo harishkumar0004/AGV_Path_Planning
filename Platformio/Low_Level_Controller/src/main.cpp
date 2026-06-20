@@ -76,6 +76,7 @@ bool alignEnabled = false;
 
 enum NavState {
     NAV_IDLE,
+    NAV_START_GATE,
     NAV_START_LOCAL_ALIGN,
     NAV_CAPTURE_HEADING,
     NAV_CRUISE,
@@ -92,6 +93,8 @@ unsigned long navTagStableStartMs = 0;
 unsigned long navLastLogMs = 0;
 unsigned long navStartAlignBeginMs = 0;
 unsigned long navStartGoodStableStartMs = 0;
+unsigned long navStartGateStableStartMs = 0;
+unsigned long navStartGateLastLogMs = 0;
 float residualTagYawDeg = 0.0f;
 long navSegmentStartLeftSteps = 0;
 long navSegmentStartRightSteps = 0;
@@ -365,6 +368,15 @@ bool isStartPoseGoodEnough() {
            fabs(pose.yawDeg) < NAV_START_GOOD_YAW_DEG;
 }
 
+bool isStartGateReady() {
+    return pose.visible &&
+           pose.id == NAV_FIRST_TAG_ID &&
+           !isPoseTimedOut() &&
+           fabs(pose.xM) < NAV_START_GATE_X_M &&
+           fabs(pose.yM) < NAV_START_GATE_Y_M &&
+           fabs(pose.yawDeg) < NAV_START_GATE_YAW_DEG;
+}
+
 bool isStartPoseSafe() {
     return pose.visible &&
            pose.id == NAV_FIRST_TAG_ID &&
@@ -468,6 +480,7 @@ const char* alignInputModeName() {
 const char* navStateName(NavState state) {
     switch (state) {
         case NAV_IDLE: return "NAV_IDLE";
+        case NAV_START_GATE: return "NAV_START_GATE";
         case NAV_START_LOCAL_ALIGN: return "NAV_START_LOCAL_ALIGN";
         case NAV_CAPTURE_HEADING: return "NAV_CAPTURE_HEADING";
         case NAV_CRUISE: return "NAV_CRUISE";
@@ -1739,14 +1752,67 @@ void printNavBrief() {
     Serial.println(pose.yawDeg, 2);
 }
 
+void printNavStartGateWait() {
+    unsigned long now = millis();
+    if (now - navStartGateLastLogMs < 200) {
+        return;
+    }
+    navStartGateLastLogMs = now;
+
+    Serial.print("NAV START GATE WAIT poseVisible=");
+    Serial.print(pose.visible ? "YES" : "NO");
+    Serial.print(" poseId=");
+    Serial.print(pose.id);
+    Serial.print(" xM=");
+    Serial.print(pose.xM, 4);
+    Serial.print(" yM=");
+    Serial.print(pose.yM, 4);
+    Serial.print(" yaw=");
+    Serial.println(pose.yawDeg, 2);
+}
+
 void updateNavigationController() {
     if (!navEnabled) {
         return;
     }
 
+    if (NAV_BYPASS_START_LOCAL_ALIGN && alignEnabled) {
+        Serial.println("ERROR: ALIGN ENABLED DURING BYPASS TEST");
+        alignEnabled = false;
+    }
+
     unsigned long now = millis();
 
     switch (navState) {
+        case NAV_START_GATE:
+            alignEnabled = false;
+            drive.stop();
+
+            if (isStartGateReady()) {
+                if (navStartGateStableStartMs == 0) {
+                    navStartGateStableStartMs = now;
+                }
+
+                if (now - navStartGateStableStartMs >= NAV_START_GATE_STABLE_MS) {
+                    residualTagYawDeg = pose.yawDeg;
+                    navStartGateStableStartMs = 0;
+                    navState = NAV_CAPTURE_HEADING;
+
+                    Serial.print("NAV START GATE READY xM=");
+                    Serial.print(pose.xM, 4);
+                    Serial.print(" yM=");
+                    Serial.print(pose.yM, 4);
+                    Serial.print(" yaw=");
+                    Serial.println(pose.yawDeg, 2);
+                    break;
+                }
+            } else {
+                navStartGateStableStartMs = 0;
+            }
+
+            printNavStartGateWait();
+            break;
+
         case NAV_START_LOCAL_ALIGN:
             alignInputMode = ALIGN_INPUT_POSE;
             alignEnabled = true;
@@ -1800,6 +1866,20 @@ void updateNavigationController() {
             break;
 
         case NAV_CAPTURE_HEADING: {
+            if (!NAV_USE_IMU_HEADING) {
+                navTargetHeadingDeg = residualTagYawDeg;
+                expectedNextTagId = NAV_FIRST_TAG_ID + 1;
+                navTagStableStartMs = 0;
+                resetNavSegmentTracking();
+                lastNavVCmd = 0.0f;
+                lastNavWCmd = 0.0f;
+                navState = NAV_CRUISE;
+
+                Serial.print("NAV CRUISE START NO_IMU residualYaw=");
+                Serial.println(residualTagYawDeg, 2);
+                break;
+            }
+
             const float imu0 = getNavImuYawDeg();
             navTargetHeadingDeg = normalizeAngleDeg(
                 imu0 + NAV_TAG_YAW_TO_IMU_SIGN * residualTagYawDeg
@@ -2239,28 +2319,37 @@ void handleCommand(String cmd) {
 
     if (cmd == "NAV START") {
         navEnabled = true;
-        navState = NAV_START_LOCAL_ALIGN;
         currentTagId = NAV_FIRST_TAG_ID;
         expectedNextTagId = NAV_FIRST_TAG_ID + 1;
         navTargetHeadingDeg = 0.0f;
         navTagStableStartMs = 0;
         navStartAlignBeginMs = millis();
         navStartGoodStableStartMs = 0;
+        navStartGateStableStartMs = 0;
+        navStartGateLastLogMs = 0;
         residualTagYawDeg = 0.0f;
         resetNavSegmentTracking();
         lastNavVCmd = 0.0f;
         navLastImuYawDeg = 0.0f;
         navLastHeadingErrorDeg = 0.0f;
         lastNavWCmd = 0.0f;
-        alignInputMode = ALIGN_INPUT_POSE;
-        alignEnabled = true;
         lastAlignV = 999.0f;
         lastAlignW = 999.0f;
         resetXStepState();
         resetPoseXStepState();
         alignState = WAIT_TAG;
         drive.stop();
-        Serial.println("NAV STARTED: START LOCAL ALIGN");
+
+        if (NAV_BYPASS_START_LOCAL_ALIGN) {
+            navState = NAV_START_GATE;
+            alignEnabled = false;
+            Serial.println("NAV STARTED: BYPASS LOCAL ALIGN, START GATE ONLY");
+        } else {
+            navState = NAV_START_LOCAL_ALIGN;
+            alignInputMode = ALIGN_INPUT_POSE;
+            alignEnabled = true;
+            Serial.println("NAV STARTED: START LOCAL ALIGN");
+        }
         return;
     }
 
@@ -2270,6 +2359,8 @@ void handleCommand(String cmd) {
         navTagStableStartMs = 0;
         navStartAlignBeginMs = 0;
         navStartGoodStableStartMs = 0;
+        navStartGateStableStartMs = 0;
+        navStartGateLastLogMs = 0;
         lastNavVCmd = 0.0f;
         lastNavWCmd = 0.0f;
         alignEnabled = false;
@@ -2287,6 +2378,8 @@ void handleCommand(String cmd) {
         navTagStableStartMs = 0;
         navStartAlignBeginMs = 0;
         navStartGoodStableStartMs = 0;
+        navStartGateStableStartMs = 0;
+        navStartGateLastLogMs = 0;
         residualTagYawDeg = 0.0f;
         resetNavSegmentTracking();
         lastNavVCmd = 0.0f;
@@ -2648,5 +2741,8 @@ void loop() {
     }
 
     updateNavigationController();
-    updateAlignmentController();
+
+    if (!(NAV_BYPASS_START_LOCAL_ALIGN && navEnabled)) {
+        updateAlignmentController();
+    }
 }
