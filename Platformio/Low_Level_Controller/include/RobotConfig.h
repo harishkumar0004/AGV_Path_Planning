@@ -205,10 +205,10 @@ constexpr float NAV_TAG_MAX_ABS_Y_M = 0.030f;
 constexpr float NAV_TAG_MAX_ABS_YAW_DEG = 35.0f;
 
 constexpr float NAV_TAG_YAW_TO_IMU_SIGN = 1.0f;
-constexpr float NAV_HEADING_KP = 0.006f;
+constexpr float NAV_HEADING_KP = 0.003f;
 constexpr float NAV_HEADING_KI = 0.000f;
 constexpr float NAV_HEADING_KD = 0.000f;
-constexpr float NAV_HEADING_W_MAX_RADPS = 0.035f;
+constexpr float NAV_HEADING_W_MAX_RADPS = 0.015f;
 constexpr float NAV_TAG_X_TO_HEADING_DEG_PER_M = -80.0f;
 constexpr float NAV_TAG_YAW_TO_HEADING_GAIN = 0.30f;
 constexpr float NAV_TAG_CORRECTION_MAX_DEG = 4.0f;

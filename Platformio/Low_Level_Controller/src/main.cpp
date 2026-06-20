@@ -144,6 +144,11 @@ unsigned long velocityTestDurationMs = 0;
 long velocityTestStartLeftSteps = 0;
 long velocityTestStartRightSteps = 0;
 bool smoothTestActive = false;
+bool smoothSteerTestActive = false;
+unsigned long smoothSteerTestStartMs = 0;
+unsigned long smoothSteerTestDurationMs = 0;
+unsigned long smoothSteerTestLastLogMs = 0;
+float smoothSteerTestWCmd = 0.0f;
 unsigned long smoothLastLogMs = 0;
 float navSmoothDistanceOffsetM = 0.0f;
 bool navSmoothExtensionStarted = false;
@@ -1929,6 +1934,44 @@ void updateSmoothMotionSystem() {
     }
 }
 
+void updateSmoothSteerTest() {
+    if (!smoothSteerTestActive) {
+        return;
+    }
+
+    unsigned long now = millis();
+    if (now - smoothSteerTestLastLogMs >= 200) {
+        smoothSteerTestLastLogMs = now;
+        Serial.print("TEST SMOOTH STEER baseV=");
+        Serial.print(
+            smoothMotion.getCurrentFrequencyHz() / PULSES_PER_METER,
+            4
+        );
+        Serial.print(" wCmd=");
+        Serial.print(smoothSteerTestWCmd, 4);
+        Serial.print(" leftHz=");
+        Serial.print(smoothMotion.getLeftFrequencyHz(), 2);
+        Serial.print(" rightHz=");
+        Serial.print(smoothMotion.getRightFrequencyHz(), 2);
+        Serial.print(" imuHeading=");
+        Serial.print(imu.getHeadingDeg(), 2);
+        Serial.print(" expectedPhysicalTurn=");
+        if (smoothSteerTestWCmd > 0.0f) {
+            Serial.println("CLOCKWISE");
+        } else if (smoothSteerTestWCmd < 0.0f) {
+            Serial.println("COUNTER_CLOCKWISE");
+        } else {
+            Serial.println("STRAIGHT");
+        }
+    }
+
+    if (now - smoothSteerTestStartMs >= smoothSteerTestDurationMs) {
+        smoothMotion.emergencyStop();
+        smoothSteerTestActive = false;
+        Serial.println("TEST SMOOTH STEER DONE");
+    }
+}
+
 void updateNavigationController() {
     if (!navEnabled) {
         return;
@@ -2225,6 +2268,7 @@ void printHelp() {
     Serial.println("  TEST VEL <v> <w> <ms>");
     Serial.println("  TEST SMOOTH HZ <hz> <distance_m>");
     Serial.println("  TEST SMOOTH VEL <speed_mps> <distance_m>");
+    Serial.println("  TEST SMOOTH STEER <base_mps> <w_radps> <ms>");
     Serial.println();
     Serial.println("Other:");
     Serial.println("  S         -> stop and disable alignment");
@@ -2576,6 +2620,7 @@ void handleCommand(String cmd) {
     if (cmd == "S" || cmd == "STOP") {
         velocityTestActive = false;
         smoothTestActive = false;
+        smoothSteerTestActive = false;
         smoothMotion.emergencyStop();
         navSmoothDistanceOffsetM = 0.0f;
         navSmoothExtensionStarted = false;
@@ -2607,6 +2652,7 @@ void handleCommand(String cmd) {
     if (cmd == "IMU CALIBRATE") {
         velocityTestActive = false;
         smoothTestActive = false;
+        smoothSteerTestActive = false;
         navEnabled = false;
         navState = NAV_IDLE;
         alignEnabled = false;
@@ -2654,6 +2700,7 @@ void handleCommand(String cmd) {
         navState = NAV_IDLE;
         alignEnabled = false;
         smoothTestActive = false;
+        smoothSteerTestActive = false;
         smoothMotion.emergencyStop();
         velocityTestStartLeftSteps = leftMotor.getStepCount();
         velocityTestStartRightSteps = rightMotor.getStepCount();
@@ -2669,6 +2716,54 @@ void handleCommand(String cmd) {
         Serial.print(testW, 4);
         Serial.print(" ms=");
         Serial.println(testDurationMs);
+        return;
+    }
+
+    if (cmd.startsWith("TEST SMOOTH STEER ")) {
+        char testBuffer[96];
+        cmd.toCharArray(testBuffer, sizeof(testBuffer));
+
+        float baseMps = 0.0f;
+        float wRadps = 0.0f;
+        unsigned long durationMs = 0;
+        int parsed = sscanf(
+            testBuffer,
+            "TEST SMOOTH STEER %f %f %lu",
+            &baseMps,
+            &wRadps,
+            &durationMs
+        );
+
+        if (parsed != 3 || baseMps <= 0.0f || durationMs == 0) {
+            Serial.println(
+                "Usage: TEST SMOOTH STEER <base_mps> <w_radps> <ms>"
+            );
+            return;
+        }
+
+        velocityTestActive = false;
+        smoothTestActive = false;
+        smoothSteerTestActive = false;
+        navEnabled = false;
+        navState = NAV_IDLE;
+        alignEnabled = false;
+        drive.stop();
+        smoothMotion.emergencyStop();
+        smoothMotion.startForwardContinuous(baseMps * PULSES_PER_METER);
+        smoothMotion.setSteeringCorrection(wRadps, WHEEL_BASE_M);
+
+        smoothSteerTestWCmd = wRadps;
+        smoothSteerTestStartMs = millis();
+        smoothSteerTestDurationMs = durationMs;
+        smoothSteerTestLastLogMs = 0;
+        smoothSteerTestActive = true;
+
+        Serial.print("TEST SMOOTH STEER START baseV=");
+        Serial.print(baseMps, 4);
+        Serial.print(" wCmd=");
+        Serial.print(wRadps, 4);
+        Serial.print(" ms=");
+        Serial.println(durationMs);
         return;
     }
 
@@ -2703,6 +2798,7 @@ void handleCommand(String cmd) {
             : value;
 
         velocityTestActive = false;
+        smoothSteerTestActive = false;
         navEnabled = false;
         navState = NAV_IDLE;
         alignEnabled = false;
@@ -2721,6 +2817,7 @@ void handleCommand(String cmd) {
     if (cmd == "NAV START") {
         velocityTestActive = false;
         smoothTestActive = false;
+        smoothSteerTestActive = false;
         smoothMotion.emergencyStop();
         navSmoothDistanceOffsetM = 0.0f;
         navSmoothExtensionStarted = false;
@@ -2762,6 +2859,7 @@ void handleCommand(String cmd) {
     if (cmd == "NAV STOP") {
         velocityTestActive = false;
         smoothTestActive = false;
+        smoothSteerTestActive = false;
         smoothMotion.emergencyStop();
         navSmoothDistanceOffsetM = 0.0f;
         navSmoothExtensionStarted = false;
@@ -2783,6 +2881,7 @@ void handleCommand(String cmd) {
     if (cmd == "NAV RESET") {
         velocityTestActive = false;
         smoothTestActive = false;
+        smoothSteerTestActive = false;
         smoothMotion.emergencyStop();
         navSmoothDistanceOffsetM = 0.0f;
         navSmoothExtensionStarted = false;
@@ -2941,6 +3040,7 @@ void handleCommand(String cmd) {
     // Any manual movement command should disable alignment.
     // This avoids fighting between manual command and auto-align.
     smoothTestActive = false;
+    smoothSteerTestActive = false;
     smoothMotion.emergencyStop();
     char buffer[60];
     cmd.toCharArray(buffer, sizeof(buffer));
@@ -3167,9 +3267,10 @@ void loop() {
     }
 
     updateSmoothMotionSystem();
+    updateSmoothSteerTest();
     updateVelocityTest();
 
-    if (!velocityTestActive && !smoothTestActive) {
+    if (!velocityTestActive && !smoothTestActive && !smoothSteerTestActive) {
         updateNavigationController();
 
         if (!(NAV_BYPASS_START_LOCAL_ALIGN && navEnabled)) {

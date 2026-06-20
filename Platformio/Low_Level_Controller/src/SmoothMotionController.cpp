@@ -229,8 +229,8 @@ void SmoothMotionController::applySteeredFrequencies(float baseFrequencyHz) {
     float baseMps = baseFrequencyHz / _pulsesPerMeter;
     float halfDifferentialMps =
         _steeringAngularVelocityRadps * _wheelBaseM * 0.5f;
-    float leftHz = fabs(baseMps - halfDifferentialMps) * _pulsesPerMeter;
-    float rightHz = fabs(baseMps + halfDifferentialMps) * _pulsesPerMeter;
+    float leftHz = fabs(baseMps + halfDifferentialMps) * _pulsesPerMeter;
+    float rightHz = fabs(baseMps - halfDifferentialMps) * _pulsesPerMeter;
 
     if (leftHz < 1.0f) leftHz = 1.0f;
     if (rightHz < 1.0f) rightHz = 1.0f;
