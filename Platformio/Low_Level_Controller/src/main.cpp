@@ -445,19 +445,38 @@ bool isExpectedNextTagVisibleForNav() {
 }
 
 void applyTagCheckpointCorrection() {
-    float correctionDeg =
-        NAV_TAG_X_TO_HEADING_DEG_PER_M * pose.xM +
-        NAV_TAG_YAW_TO_HEADING_GAIN * pose.yawDeg;
+    float xCorrectionDeg = NAV_TAG_X_TO_HEADING_DEG_PER_M * pose.xM;
+    float yawCorrectionDeg = NAV_TAG_YAW_TO_HEADING_GAIN * pose.yawDeg;
+    float rawCorrectionDeg = xCorrectionDeg + yawCorrectionDeg;
 
-    correctionDeg = clampFloat(
-        correctionDeg,
+    float correctionDeg = clampFloat(
+        rawCorrectionDeg,
         -NAV_TAG_CORRECTION_MAX_DEG,
         NAV_TAG_CORRECTION_MAX_DEG
     );
+    correctionDeg = clampFloat(
+        correctionDeg,
+        -NAV_CHECKPOINT_TARGET_CHANGE_MAX_DEG,
+        NAV_CHECKPOINT_TARGET_CHANGE_MAX_DEG
+    );
 
+    float oldTargetHeadingDeg = navTargetHeadingDeg;
     navTargetHeadingDeg = normalizeAngleDeg(
         navTargetHeadingDeg + correctionDeg
     );
+
+    Serial.print("NAV CHECKPOINT RAW xCorrection=");
+    Serial.print(xCorrectionDeg, 3);
+    Serial.print(" yawCorrection=");
+    Serial.print(yawCorrectionDeg, 3);
+    Serial.print(" rawCorrection=");
+    Serial.print(rawCorrectionDeg, 3);
+    Serial.print(" clampedCorrection=");
+    Serial.print(correctionDeg, 3);
+    Serial.print(" oldTarget=");
+    Serial.print(oldTargetHeadingDeg, 2);
+    Serial.print(" newTarget=");
+    Serial.println(navTargetHeadingDeg, 2);
 
     Serial.print("NAV CHECKPOINT tag=");
     Serial.print(pose.id);

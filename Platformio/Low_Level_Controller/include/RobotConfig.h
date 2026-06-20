@@ -167,7 +167,7 @@ constexpr float POSE_TRIAL_POSITION_READY_M = 0.0040f;
 // Phase 4A tag-to-tag navigation
 
 constexpr int NAV_FIRST_TAG_ID = 0;
-constexpr int NAV_FINAL_TAG_ID = 1;
+constexpr int NAV_FINAL_TAG_ID = 2;
 constexpr bool NAV_USE_IMU_HEADING = true;
 constexpr bool NAV_FULL_IMU_CALIBRATE_AT_START = false;
 constexpr bool NAV_BYPASS_START_LOCAL_ALIGN = true;
@@ -209,9 +209,10 @@ constexpr float NAV_HEADING_KP = 0.003f;
 constexpr float NAV_HEADING_KI = 0.000f;
 constexpr float NAV_HEADING_KD = 0.000f;
 constexpr float NAV_HEADING_W_MAX_RADPS = 0.015f;
-constexpr float NAV_TAG_X_TO_HEADING_DEG_PER_M = -80.0f;
-constexpr float NAV_TAG_YAW_TO_HEADING_GAIN = 0.30f;
-constexpr float NAV_TAG_CORRECTION_MAX_DEG = 4.0f;
+constexpr float NAV_TAG_X_TO_HEADING_DEG_PER_M = -30.0f;
+constexpr float NAV_TAG_YAW_TO_HEADING_GAIN = 0.10f;
+constexpr float NAV_TAG_CORRECTION_MAX_DEG = 0.50f;
+constexpr float NAV_CHECKPOINT_TARGET_CHANGE_MAX_DEG = 0.40f;
 
 // ESP32 motor timer
 // 20 us interrupt = 50 kHz timer rate
