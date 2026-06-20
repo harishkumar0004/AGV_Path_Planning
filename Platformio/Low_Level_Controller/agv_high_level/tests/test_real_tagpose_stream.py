@@ -17,6 +17,23 @@ WINDOW_NAME = "AGV Real AprilTag TAGPOSE Stream"
 POSE_PRINT_PERIOD_SEC = 0.2
 
 
+class FPSCounter:
+    def __init__(self):
+        self.window_start = time.monotonic()
+        self.frame_count = 0
+        self.fps = 0.0
+
+    def tick(self):
+        self.frame_count += 1
+        now = time.monotonic()
+        elapsed = now - self.window_start
+        if elapsed >= 1.0:
+            self.fps = self.frame_count / elapsed
+            self.frame_count = 0
+            self.window_start = now
+        return self.fps
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Stream real camera TAGPOSE measurements to the ESP32."
@@ -29,6 +46,62 @@ def parse_args() -> argparse.Namespace:
 def print_esp32_lines(client: ESP32Client) -> None:
     for line in client.read_lines():
         print(f"ESP32 {line}")
+
+
+def draw_fps_overlay(
+    cv2,
+    frame,
+    camera_fps: float,
+    detection_time_ms: float,
+    pose: TagPose | None,
+    tag_fps: float,
+    visible_tag_fps: dict[int, float],
+) -> None:
+    visible = pose is not None
+    left_lines = [
+        f"Camera FPS: {camera_fps:.1f}",
+        f"Detection Time: {detection_time_ms:.1f} ms",
+        f"Tag Visible: {'YES' if visible else 'NO'}",
+        f"Tag ID: {pose.tag_id if visible else -1}",
+        f"Tag FPS: {tag_fps:.1f}",
+    ]
+
+    if visible:
+        right_lines = [
+            f"xM: {pose.x_m:+.4f}",
+            f"yM: {pose.y_m:+.4f}",
+            f"zM: {pose.z_m:+.4f}",
+            f"yaw: {pose.yaw_deg:+.2f}",
+        ]
+    else:
+        right_lines = ["xM: --", "yM: --", "zM: --", "yaw: --"]
+
+    right_lines.extend(
+        f"Tag {tag_id} FPS: {fps:.1f}"
+        for tag_id, fps in sorted(visible_tag_fps.items())
+    )
+
+    for index, text in enumerate(left_lines):
+        cv2.putText(
+            frame,
+            text,
+            (20, 130 + index * 25),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (0, 255, 255),
+            2,
+        )
+
+    for index, text in enumerate(right_lines):
+        cv2.putText(
+            frame,
+            text,
+            (350, 130 + index * 25),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (0, 255, 255),
+            2,
+        )
 
 
 def main() -> None:
@@ -50,6 +123,8 @@ def main() -> None:
     streamer = TagPoseStreamer(client)
     camera = CameraManager()
     detector = AprilTagDetector()
+    camera_fps_counter = FPSCounter()
+    tag_fps_counters: dict[int, FPSCounter] = {}
     last_pose_print_time = 0.0
 
     try:
@@ -67,6 +142,7 @@ def main() -> None:
                 print_esp32_lines(client)
                 continue
 
+            camera_fps = camera_fps_counter.tick()
             frame_height, frame_width = frame.shape[:2]
             image_center_x = frame_width / 2.0
             image_center_y = frame_height / 2.0
@@ -81,8 +157,21 @@ def main() -> None:
                     frame_height,
                 )
 
+            visible_tag_fps: dict[int, float] = {}
+            for detected_tag in detections:
+                estimated_pose = detected_tag.get("pose")
+                if estimated_pose is None or not estimated_pose["valid"]:
+                    continue
+
+                tag_id = detected_tag["tag_id"]
+                if tag_id not in tag_fps_counters:
+                    tag_fps_counters[tag_id] = FPSCounter()
+                visible_tag_fps[tag_id] = tag_fps_counters[tag_id].tick()
+
             detection = choose_best_detection(detections)
             now = time.monotonic()
+            visible_pose = None
+            selected_tag_fps = 0.0
 
             if detection is not None:
                 estimated_pose = detection.get("pose")
@@ -96,13 +185,17 @@ def main() -> None:
                         yaw_deg=estimated_pose["yaw_deg"],
                         timestamp=now,
                     )
+                    visible_pose = pose
+                    selected_tag_fps = visible_tag_fps.get(pose.tag_id, 0.0)
                     streamer.update(pose)
 
                     if now - last_pose_print_time >= POSE_PRINT_PERIOD_SEC:
                         print(
                             f"TAGPOSE id={pose.tag_id} "
                             f"xM={pose.x_m:.4f} yM={pose.y_m:.4f} "
-                            f"zM={pose.z_m:.4f} yaw={pose.yaw_deg:.2f}"
+                            f"zM={pose.z_m:.4f} yaw={pose.yaw_deg:.2f} "
+                            f"cameraFPS={camera_fps:.1f} "
+                            f"tagFPS={selected_tag_fps:.1f}"
                         )
                         last_pose_print_time = now
                 else:
@@ -118,6 +211,15 @@ def main() -> None:
             else:
                 streamer.update(TagPose.lost())
 
+            draw_fps_overlay(
+                cv2,
+                frame,
+                camera_fps,
+                detector.detection_time_ms,
+                visible_pose,
+                selected_tag_fps,
+                visible_tag_fps,
+            )
             print_esp32_lines(client)
             cv2.imshow(WINDOW_NAME, frame)
             key = cv2.waitKey(1) & 0xFF
