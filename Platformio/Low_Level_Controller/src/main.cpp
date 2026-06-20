@@ -2,6 +2,8 @@
 #include "RobotConfig.h"
 #include "StepperTimerMotor.h"
 #include "DifferentialDrive.h"
+#include "SmoothStepGenerator.h"
+#include "SmoothMotionController.h"
 
 // =====================================================
 // Motor objects
@@ -32,6 +34,31 @@ StepperTimerMotor rightMotor(
 );
 
 DifferentialDrive drive(leftMotor, rightMotor);
+
+SmoothStepGenerator smoothLeftMotor(
+    LEFT_PUL_PIN,
+    LEFT_DIR_PIN,
+    LEFT_ENA_PIN,
+    1,
+    LEFT_DIR_INVERT,
+    ENABLE_ACTIVE_LOW
+);
+
+SmoothStepGenerator smoothRightMotor(
+    RIGHT_PUL_PIN,
+    RIGHT_DIR_PIN,
+    RIGHT_ENA_PIN,
+    2,
+    RIGHT_DIR_INVERT,
+    ENABLE_ACTIVE_LOW
+);
+
+SmoothMotionController smoothMotion(
+    smoothLeftMotor,
+    smoothRightMotor,
+    PULSES_PER_METER,
+    NAV_TEST_ACCEL_HZ_PER_SEC
+);
 
 // =====================================================
 // AprilTag alignment data
@@ -110,6 +137,10 @@ unsigned long velocityTestStartMs = 0;
 unsigned long velocityTestDurationMs = 0;
 long velocityTestStartLeftSteps = 0;
 long velocityTestStartRightSteps = 0;
+bool smoothTestActive = false;
+unsigned long smoothLastLogMs = 0;
+float navSmoothDistanceOffsetM = 0.0f;
+bool navSmoothExtensionStarted = false;
 
 enum PoseGeoState {
     PG_OBSERVE,
@@ -1736,9 +1767,13 @@ void printNavBrief() {
 
     Serial.print("NAV state=");
     Serial.print(navStateName(navState));
-    float distMoved = getNavDistanceMovedM();
+    float distMoved = navSmoothDistanceOffsetM + smoothMotion.getDistanceMovedM();
     float distRemain = NAV_TAG_SPACING_M - distMoved;
 
+    Serial.print(" phase=");
+    Serial.print(smoothMotion.getPhaseName());
+    Serial.print(" freqHz=");
+    Serial.print(smoothMotion.getCurrentFrequencyHz(), 2);
     Serial.print(" distMoved=");
     Serial.print(distMoved, 4);
     Serial.print(" distRemain=");
@@ -1785,8 +1820,8 @@ void printNavMotorBrief() {
     }
     navLastMotorLogMs = now;
 
-    long leftSteps = leftMotor.getStepCount();
-    long rightSteps = rightMotor.getStepCount();
+    uint32_t leftSteps = smoothMotion.getLeftStepCount();
+    uint32_t rightSteps = smoothMotion.getRightStepCount();
 
     Serial.print("NAV MOTOR state=");
     Serial.print(navStateName(navState));
@@ -1795,17 +1830,17 @@ void printNavMotorBrief() {
     Serial.print(" wCmd=");
     Serial.print(lastNavWCmd, 4);
     Serial.print(" leftHz=");
-    Serial.print(leftMotor.getTargetHz(), 2);
+    Serial.print(smoothMotion.getCurrentFrequencyHz(), 2);
     Serial.print(" rightHz=");
-    Serial.print(rightMotor.getTargetHz(), 2);
+    Serial.print(smoothMotion.getCurrentFrequencyHz(), 2);
     Serial.print(" leftSteps=");
     Serial.print(leftSteps);
     Serial.print(" rightSteps=");
     Serial.print(rightSteps);
     Serial.print(" leftDelta=");
-    Serial.print(leftSteps - navSegmentStartLeftSteps);
+    Serial.print(leftSteps);
     Serial.print(" rightDelta=");
-    Serial.println(rightSteps - navSegmentStartRightSteps);
+    Serial.println(rightSteps);
 }
 
 void updateVelocityTest() {
@@ -1833,6 +1868,46 @@ void updateVelocityTest() {
     Serial.print(leftDelta);
     Serial.print(" rightDelta=");
     Serial.println(rightDelta);
+}
+
+void printSmoothBrief() {
+    unsigned long now = millis();
+    if (now - smoothLastLogMs < 200) {
+        return;
+    }
+    smoothLastLogMs = now;
+
+    Serial.print("SMOOTH phase=");
+    Serial.print(smoothMotion.getPhaseName());
+    Serial.print(" freqHz=");
+    Serial.print(smoothMotion.getCurrentFrequencyHz(), 2);
+    Serial.print(" steps=");
+    Serial.print(smoothMotion.getStepCount());
+    Serial.print(" distanceM=");
+    Serial.print(smoothMotion.getDistanceMovedM(), 4);
+    Serial.print(" running=");
+    Serial.println(smoothMotion.isRunning() ? "YES" : "NO");
+}
+
+void updateSmoothMotionSystem() {
+    bool wasRunning = smoothMotion.isRunning();
+    smoothMotion.update();
+
+    bool shouldLog =
+        smoothMotion.isRunning() ||
+        smoothTestActive ||
+        (navEnabled && navState == NAV_CRUISE);
+    if (shouldLog) {
+        printSmoothBrief();
+    }
+
+    if (smoothTestActive && wasRunning && !smoothMotion.isRunning()) {
+        smoothTestActive = false;
+        Serial.print("TEST SMOOTH DONE steps=");
+        Serial.print(smoothMotion.getStepCount());
+        Serial.print(" distanceM=");
+        Serial.println(smoothMotion.getDistanceMovedM(), 4);
+    }
 }
 
 void updateNavigationController() {
@@ -1935,7 +2010,15 @@ void updateNavigationController() {
                 expectedNextTagId = NAV_FIRST_TAG_ID + 1;
                 navTagStableStartMs = 0;
                 resetNavSegmentTracking();
-                lastNavVCmd = 0.0f;
+                drive.stop();
+                smoothMotion.startForwardDistance(
+                    NAV_TAG_SPACING_M,
+                    NAV_TEST_MAX_HZ
+                );
+                navSmoothDistanceOffsetM = 0.0f;
+                navSmoothExtensionStarted = false;
+                lastNavVCmd =
+                    smoothMotion.getCurrentFrequencyHz() / PULSES_PER_METER;
                 lastNavWCmd = 0.0f;
                 navState = NAV_CRUISE;
 
@@ -1967,9 +2050,10 @@ void updateNavigationController() {
         case NAV_CRUISE: {
             alignEnabled = false;
 
-            float distMoved = getNavDistanceMovedM();
+            float distMoved =
+                navSmoothDistanceOffsetM + smoothMotion.getDistanceMovedM();
             if (distMoved > NAV_SEGMENT_MAX_DISTANCE_M) {
-                drive.stop();
+                smoothMotion.emergencyStop();
                 lastNavVCmd = 0.0f;
                 lastNavWCmd = 0.0f;
                 navState = NAV_ERROR;
@@ -1977,18 +2061,17 @@ void updateNavigationController() {
                 break;
             }
 
-            float vCmd = computeNavTrapezoidSpeedMps();
-            float wCmd = 0.0f;
-
-            if (NAV_USE_IMU_HEADING) {
-                // Connect the existing IMU heading PID output here when available.
-                wCmd = 0.0f;
+            if (!smoothMotion.isRunning() && !navSmoothExtensionStarted) {
+                navSmoothDistanceOffsetM += smoothMotion.getDistanceMovedM();
+                smoothMotion.startForwardContinuous(
+                    NAV_TAG_CAPTURE_SPEED_MPS * PULSES_PER_METER
+                );
+                navSmoothExtensionStarted = true;
             }
 
-            lastNavVCmd = vCmd;
-            lastNavWCmd = wCmd;
-
-            drive.setRobotVelocity(vCmd, wCmd);
+            lastNavVCmd =
+                smoothMotion.getCurrentFrequencyHz() / PULSES_PER_METER;
+            lastNavWCmd = 0.0f;
             printNavMotorBrief();
 
             if (isExpectedNextTagVisibleForNav()) {
@@ -2002,12 +2085,19 @@ void updateNavigationController() {
                     resetNavSegmentTracking();
 
                     if (currentTagId >= NAV_FINAL_TAG_ID) {
-                        drive.stop();
+                        smoothMotion.emergencyStop();
                         lastNavVCmd = 0.0f;
                         lastNavWCmd = 0.0f;
                         navState = NAV_DONE;
                         navEnabled = false;
                         Serial.println("NAV DONE");
+                    } else {
+                        smoothMotion.startForwardDistance(
+                            NAV_TAG_SPACING_M,
+                            NAV_TEST_MAX_HZ
+                        );
+                        navSmoothDistanceOffsetM = 0.0f;
+                        navSmoothExtensionStarted = false;
                     }
                 }
             } else {
@@ -2017,13 +2107,13 @@ void updateNavigationController() {
         }
 
         case NAV_DONE:
-            drive.stop();
+            smoothMotion.emergencyStop();
             alignEnabled = false;
             navEnabled = false;
             break;
 
         case NAV_ERROR:
-            drive.stop();
+            smoothMotion.emergencyStop();
             alignEnabled = false;
             break;
 
@@ -2076,6 +2166,8 @@ void printHelp() {
     Serial.println("  NAV RESET");
     Serial.println("  NAV STATUS");
     Serial.println("  TEST VEL <v> <w> <ms>");
+    Serial.println("  TEST SMOOTH HZ <hz> <distance_m>");
+    Serial.println("  TEST SMOOTH VEL <speed_mps> <distance_m>");
     Serial.println();
     Serial.println("Other:");
     Serial.println("  S         -> stop and disable alignment");
@@ -2376,6 +2468,10 @@ void handleCommand(String cmd) {
 
     if (cmd == "S" || cmd == "STOP") {
         velocityTestActive = false;
+        smoothTestActive = false;
+        smoothMotion.emergencyStop();
+        navSmoothDistanceOffsetM = 0.0f;
+        navSmoothExtensionStarted = false;
         navEnabled = false;
         navState = NAV_IDLE;
         alignEnabled = false;
@@ -2419,6 +2515,8 @@ void handleCommand(String cmd) {
         navEnabled = false;
         navState = NAV_IDLE;
         alignEnabled = false;
+        smoothTestActive = false;
+        smoothMotion.emergencyStop();
         velocityTestStartLeftSteps = leftMotor.getStepCount();
         velocityTestStartRightSteps = rightMotor.getStepCount();
         velocityTestStartMs = millis();
@@ -2436,8 +2534,58 @@ void handleCommand(String cmd) {
         return;
     }
 
+    if (cmd.startsWith("TEST SMOOTH HZ ") ||
+        cmd.startsWith("TEST SMOOTH VEL ")) {
+        char testBuffer[96];
+        cmd.toCharArray(testBuffer, sizeof(testBuffer));
+
+        float value = 0.0f;
+        float distanceM = 0.0f;
+        bool speedCommand = cmd.startsWith("TEST SMOOTH VEL ");
+        int parsed = sscanf(
+            testBuffer,
+            speedCommand
+                ? "TEST SMOOTH VEL %f %f"
+                : "TEST SMOOTH HZ %f %f",
+            &value,
+            &distanceM
+        );
+
+        if (parsed != 2 || value <= 0.0f || distanceM <= 0.0f) {
+            Serial.println(
+                speedCommand
+                    ? "Usage: TEST SMOOTH VEL <speed_mps> <distance_m>"
+                    : "Usage: TEST SMOOTH HZ <hz> <distance_m>"
+            );
+            return;
+        }
+
+        float maxFrequencyHz = speedCommand
+            ? value * PULSES_PER_METER
+            : value;
+
+        velocityTestActive = false;
+        navEnabled = false;
+        navState = NAV_IDLE;
+        alignEnabled = false;
+        drive.stop();
+        smoothMotion.startForwardDistance(distanceM, maxFrequencyHz);
+        smoothTestActive = true;
+        smoothLastLogMs = 0;
+
+        Serial.print("TEST SMOOTH START maxHz=");
+        Serial.print(maxFrequencyHz, 2);
+        Serial.print(" distanceM=");
+        Serial.println(distanceM, 4);
+        return;
+    }
+
     if (cmd == "NAV START") {
         velocityTestActive = false;
+        smoothTestActive = false;
+        smoothMotion.emergencyStop();
+        navSmoothDistanceOffsetM = 0.0f;
+        navSmoothExtensionStarted = false;
         navEnabled = true;
         currentTagId = NAV_FIRST_TAG_ID;
         expectedNextTagId = NAV_FIRST_TAG_ID + 1;
@@ -2475,6 +2623,10 @@ void handleCommand(String cmd) {
 
     if (cmd == "NAV STOP") {
         velocityTestActive = false;
+        smoothTestActive = false;
+        smoothMotion.emergencyStop();
+        navSmoothDistanceOffsetM = 0.0f;
+        navSmoothExtensionStarted = false;
         navEnabled = false;
         navState = NAV_IDLE;
         navTagStableStartMs = 0;
@@ -2492,6 +2644,10 @@ void handleCommand(String cmd) {
 
     if (cmd == "NAV RESET") {
         velocityTestActive = false;
+        smoothTestActive = false;
+        smoothMotion.emergencyStop();
+        navSmoothDistanceOffsetM = 0.0f;
+        navSmoothExtensionStarted = false;
         navEnabled = false;
         navState = NAV_IDLE;
         currentTagId = NAV_FIRST_TAG_ID;
@@ -2646,6 +2802,8 @@ void handleCommand(String cmd) {
 
     // Any manual movement command should disable alignment.
     // This avoids fighting between manual command and auto-align.
+    smoothTestActive = false;
+    smoothMotion.emergencyStop();
     char buffer[60];
     cmd.toCharArray(buffer, sizeof(buffer));
 
@@ -2812,6 +2970,7 @@ void setup() {
     drive.stop();
 
     setupMotorTimer();
+    smoothMotion.begin();
 
     printHelp();
 
@@ -2862,9 +3021,10 @@ void loop() {
         }
     }
 
+    updateSmoothMotionSystem();
     updateVelocityTest();
 
-    if (!velocityTestActive) {
+    if (!velocityTestActive && !smoothTestActive) {
         updateNavigationController();
 
         if (!(NAV_BYPASS_START_LOCAL_ALIGN && navEnabled)) {
