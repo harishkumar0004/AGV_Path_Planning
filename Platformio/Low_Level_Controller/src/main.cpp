@@ -1821,8 +1821,17 @@ float limitSignedValue(float value, float maxAbsValue) {
 bool handleTagCommand(const String& cmd) {
     if (cmd == "TAG LOST") {
         tag.visible = false;
+        tag.id = -1;
+        tag.xNorm = 0.0f;
+        tag.yNorm = 0.0f;
+        tag.thetaDeg = 0.0f;
         tag.nearEdge = false;
+
         pose.visible = false;
+        pose.id = -1;
+        pose.xM = 0.0f;
+        pose.yM = 0.0f;
+        pose.yawDeg = 0.0f;
 
         if (alignEnabled) {
             drive.stop();
