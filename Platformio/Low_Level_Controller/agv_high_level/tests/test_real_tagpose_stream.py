@@ -21,6 +21,8 @@ POSE_PRINT_PERIOD_SEC = 0.2
 @dataclass
 class ESP32NavTelemetry:
     nav_state: str = "UNKNOWN"
+    imu_state: str = "UNKNOWN"
+    imu_ready: str = "NO"
     current_tag: int | None = None
     expected_next: int | None = None
     pose_id: int | None = None
@@ -75,6 +77,48 @@ def parse_nav_fields(line: str) -> dict[str, str]:
 
 def update_nav_telemetry(line: str, telemetry: ESP32NavTelemetry) -> None:
     now = time.monotonic()
+
+    if line == "IMU_CALIBRATING":
+        telemetry.imu_state = "CALIBRATING"
+        telemetry.imu_ready = "NO"
+        telemetry.last_update_time = now
+        return
+    if line == "IMU_READY":
+        telemetry.imu_state = "READY"
+        telemetry.imu_ready = "YES"
+        telemetry.last_update_time = now
+        return
+    if line == "IMU_ERROR":
+        telemetry.imu_state = "ERROR"
+        telemetry.imu_ready = "NO"
+        telemetry.last_update_time = now
+        return
+
+    status_field, separator, status_value = line.partition(":")
+    if separator:
+        status_value = status_value.strip()
+        if status_field == "imuState":
+            telemetry.imu_state = status_value
+        elif status_field in ("imuReady", "IMU ready"):
+            telemetry.imu_ready = status_value
+        elif status_field in ("headingDeg", "IMU headingDeg", "HEADING"):
+            telemetry.imu_heading_deg = parse_float(
+                status_value, telemetry.imu_heading_deg
+            )
+        elif status_field == "navTargetHeadingDeg":
+            telemetry.target_heading_deg = parse_float(
+                status_value, telemetry.target_heading_deg
+            )
+        elif status_field == "headingErrorDeg":
+            telemetry.heading_error_deg = parse_float(
+                status_value, telemetry.heading_error_deg
+            )
+        else:
+            status_value = ""
+
+        if status_value:
+            telemetry.last_update_time = now
+            return
 
     if line.startswith("NAV MOTOR state="):
         fields = parse_nav_fields(line)
@@ -245,6 +289,8 @@ def draw_fps_overlay(
         f"Expected Next: {format_value(nav_telemetry.expected_next)}",
     ]
     nav_right_lines = [
+        f"IMU State: {nav_telemetry.imu_state}",
+        f"IMU Ready: {nav_telemetry.imu_ready}",
         f"IMU Heading: {format_value(nav_telemetry.imu_heading_deg)}",
         f"Target Heading: {format_value(nav_telemetry.target_heading_deg)}",
         f"Heading Error: {format_value(nav_telemetry.heading_error_deg)}",
@@ -274,31 +320,20 @@ def draw_fps_overlay(
             1,
         )
 
-    motor_left_lines = [
-        f"Left Hz: {format_value(nav_telemetry.left_hz)}",
-        f"Left Steps: {format_value(nav_telemetry.left_steps)}",
-    ]
-    motor_right_lines = [
-        f"Right Hz: {format_value(nav_telemetry.right_hz)}",
-        f"Right Steps: {format_value(nav_telemetry.right_steps)}",
+    motor_lines = [
+        "Left Hz: "
+        f"{format_value(nav_telemetry.left_hz)}  Right Hz: "
+        f"{format_value(nav_telemetry.right_hz)}",
+        "Left Steps: "
+        f"{format_value(nav_telemetry.left_steps)}  Right Steps: "
+        f"{format_value(nav_telemetry.right_steps)}",
     ]
 
-    for index, text in enumerate(motor_left_lines):
+    for index, text in enumerate(motor_lines):
         cv2.putText(
             frame,
             text,
             (20, 400 + index * 20),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.48,
-            (255, 180, 0),
-            1,
-        )
-
-    for index, text in enumerate(motor_right_lines):
-        cv2.putText(
-            frame,
-            text,
-            (350, 400 + index * 20),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.48,
             (255, 180, 0),
@@ -310,37 +345,39 @@ def draw_fps_overlay(
         cv2.putText(
             frame,
             "ESP32 Telemetry: STALE",
-            (20, 445),
+            (350, 105),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.55,
             (0, 0, 255),
             2,
         )
 
-    key_legend = (
+    key_legends = [
         "Keys: q quit | s stop | a align on | o align off | p pose | "
-        "n nav start | x nav stop | r nav reset | v nav status"
-    )
+        "n nav start | x nav stop | r nav reset | v nav status",
+        "h status | i imu status | c imu calibrate | z imu zero",
+    ]
     frame_height, frame_width = frame.shape[:2]
-    legend_scale = 0.45
-    legend_width = cv2.getTextSize(
-        key_legend,
-        cv2.FONT_HERSHEY_SIMPLEX,
-        legend_scale,
-        1,
-    )[0][0]
-    if legend_width > frame_width - 20:
-        legend_scale *= (frame_width - 20) / legend_width
+    for index, key_legend in enumerate(key_legends):
+        legend_scale = 0.42
+        legend_width = cv2.getTextSize(
+            key_legend,
+            cv2.FONT_HERSHEY_SIMPLEX,
+            legend_scale,
+            1,
+        )[0][0]
+        if legend_width > frame_width - 20:
+            legend_scale *= (frame_width - 20) / legend_width
 
-    cv2.putText(
-        frame,
-        key_legend,
-        (10, frame_height - 10),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        legend_scale,
-        (255, 255, 255),
-        1,
-    )
+        cv2.putText(
+            frame,
+            key_legend,
+            (10, frame_height - 28 + index * 18),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            legend_scale,
+            (255, 255, 255),
+            1,
+        )
 
 
 def main() -> None:
@@ -499,6 +536,15 @@ def main() -> None:
             elif key == ord("h"):
                 client.status()
                 print("SENT: STATUS")
+            elif key == ord("i"):
+                client.send_line("IMU STATUS")
+                print("SENT: IMU STATUS")
+            elif key == ord("c"):
+                client.send_line("IMU CALIBRATE")
+                print("SENT: IMU CALIBRATE")
+            elif key == ord("z"):
+                client.send_line("IMU ZERO")
+                print("SENT: IMU ZERO")
     except KeyboardInterrupt:
         pass
     finally:
