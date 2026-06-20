@@ -74,6 +74,21 @@ AlignInputMode alignInputMode = ALIGN_INPUT_PIXEL;
 
 bool alignEnabled = false;
 
+enum NavState {
+    NAV_IDLE,
+    NAV_START_ALIGN,
+    NAV_CAPTURE_HEADING,
+    NAV_CRUISE,
+    NAV_DONE,
+    NAV_ERROR
+};
+
+bool navEnabled = false;
+NavState navState = NAV_IDLE;
+int currentTagId = 0;
+int expectedNextTagId = 1;
+float navTargetHeadingDeg = 0.0f;
+
 enum PoseGeoState {
     PG_OBSERVE,
     PG_TURN,
@@ -331,6 +346,18 @@ const char* alignInputModeName() {
         case ALIGN_INPUT_POSE_GEOMETRIC: return "GEOMETRIC";
         case ALIGN_INPUT_POSE_PRIMITIVE: return "PRIMITIVE";
         case ALIGN_INPUT_POSE_TRIAL: return "TRIAL";
+        default: return "UNKNOWN";
+    }
+}
+
+const char* navStateName(NavState state) {
+    switch (state) {
+        case NAV_IDLE: return "NAV_IDLE";
+        case NAV_START_ALIGN: return "NAV_START_ALIGN";
+        case NAV_CAPTURE_HEADING: return "NAV_CAPTURE_HEADING";
+        case NAV_CRUISE: return "NAV_CRUISE";
+        case NAV_DONE: return "NAV_DONE";
+        case NAV_ERROR: return "NAV_ERROR";
         default: return "UNKNOWN";
     }
 }
@@ -1601,6 +1628,10 @@ void printHelp() {
     Serial.println("  TAG <id> <x_norm> <y_norm> <theta_deg>");
     Serial.println("  TAGPOSE <id> <x_m> <y_m> <yaw_deg>");
     Serial.println("  TAG LOST");
+    Serial.println("  NAV START");
+    Serial.println("  NAV STOP");
+    Serial.println("  NAV RESET");
+    Serial.println("  NAV STATUS");
     Serial.println();
     Serial.println("Other:");
     Serial.println("  S         -> stop and disable alignment");
@@ -1631,6 +1662,18 @@ void printStatus() {
 
     Serial.print("Align input mode: ");
     Serial.println(alignInputModeName());
+
+    Serial.print("Navigation enabled: ");
+    Serial.println(navEnabled ? "YES" : "NO");
+
+    Serial.print("Navigation state: ");
+    Serial.println(navStateName(navState));
+
+    Serial.print("Current tag id: ");
+    Serial.println(currentTagId);
+
+    Serial.print("Expected next tag id: ");
+    Serial.println(expectedNextTagId);
 
     Serial.print("Tag visible: ");
     Serial.println(tag.visible ? "YES" : "NO");
@@ -1707,6 +1750,42 @@ void printStatus() {
     Serial.println(rightMotor.getStepCount());
 
     Serial.println("------------------");
+}
+
+void printNavStatus() {
+    Serial.println("----- NAV STATUS -----");
+
+    Serial.print("navEnabled: ");
+    Serial.println(navEnabled ? "YES" : "NO");
+
+    Serial.print("navState: ");
+    Serial.println(navStateName(navState));
+
+    Serial.print("currentTagId: ");
+    Serial.println(currentTagId);
+
+    Serial.print("expectedNextTagId: ");
+    Serial.println(expectedNextTagId);
+
+    Serial.print("navTargetHeadingDeg: ");
+    Serial.println(navTargetHeadingDeg, 2);
+
+    Serial.print("poseVisible: ");
+    Serial.println(pose.visible ? "YES" : "NO");
+
+    Serial.print("poseId: ");
+    Serial.println(pose.id);
+
+    Serial.print("pose xM: ");
+    Serial.println(pose.xM, 4);
+
+    Serial.print("pose yM: ");
+    Serial.println(pose.yM, 4);
+
+    Serial.print("pose yawDeg: ");
+    Serial.println(pose.yawDeg, 2);
+
+    Serial.println("----------------------");
 }
 
 // =====================================================
@@ -1846,6 +1925,42 @@ void handleCommand(String cmd) {
 
     if (cmd == "STATUS") {
         printStatus();
+        return;
+    }
+
+    if (cmd == "NAV START") {
+        navEnabled = true;
+        navState = NAV_START_ALIGN;
+        currentTagId = 0;
+        expectedNextTagId = 1;
+        drive.stop();
+        Serial.println("NAV STARTED");
+        return;
+    }
+
+    if (cmd == "NAV STOP") {
+        navEnabled = false;
+        navState = NAV_IDLE;
+        alignEnabled = false;
+        drive.stop();
+        Serial.println("NAV STOPPED");
+        return;
+    }
+
+    if (cmd == "NAV RESET") {
+        navEnabled = false;
+        navState = NAV_IDLE;
+        currentTagId = 0;
+        expectedNextTagId = 1;
+        navTargetHeadingDeg = 0.0f;
+        alignEnabled = false;
+        drive.stop();
+        Serial.println("NAV RESET");
+        return;
+    }
+
+    if (cmd == "NAV STATUS") {
+        printNavStatus();
         return;
     }
 

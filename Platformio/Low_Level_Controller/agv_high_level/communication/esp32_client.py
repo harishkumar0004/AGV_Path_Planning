@@ -94,9 +94,9 @@ class ESP32Client:
         y_m: float,
         yaw_deg: float,
     ) -> None:
-        # The latest ESP32 TAGPOSE command does not include the observed tag ID.
-        _ = tag_id
-        self.send_line(f"TAGPOSE {x_m:.4f} {y_m:.4f} {yaw_deg:.2f}")
+        self.send_line(
+            f"TAGPOSE {tag_id} {x_m:.4f} {y_m:.4f} {yaw_deg:.2f}"
+        )
 
     def send_tag_lost(self) -> None:
         self.send_line("TAG LOST")
