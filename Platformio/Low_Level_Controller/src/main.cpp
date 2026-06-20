@@ -4,6 +4,7 @@
 #include "DifferentialDrive.h"
 #include "SmoothStepGenerator.h"
 #include "SmoothMotionController.h"
+#include "ImuManager.h"
 
 // =====================================================
 // Motor objects
@@ -59,6 +60,8 @@ SmoothMotionController smoothMotion(
     PULSES_PER_METER,
     NAV_TEST_ACCEL_HZ_PER_SEC
 );
+
+ImuManager imu;
 
 // =====================================================
 // AprilTag alignment data
@@ -130,6 +133,9 @@ float lastNavVCmd = 0.0f;
 float navLastImuYawDeg = 0.0f;
 float navLastHeadingErrorDeg = 0.0f;
 float lastNavWCmd = 0.0f;
+float navHeadingIntegral = 0.0f;
+float navHeadingPreviousErrorDeg = 0.0f;
+unsigned long navHeadingLastUpdateMs = 0;
 unsigned long navLastMotorLogMs = 0;
 
 bool velocityTestActive = false;
@@ -479,8 +485,7 @@ void resetNavSegmentTracking() {
 }
 
 float getNavImuYawDeg() {
-    // Phase 4A fallback until an IMU interface is added to this firmware.
-    return 0.0f;
+    return imu.getHeadingDeg();
 }
 
 float computeNavTrapezoidSpeedMps() {
@@ -1774,6 +1779,12 @@ void printNavBrief() {
     Serial.print(smoothMotion.getPhaseName());
     Serial.print(" freqHz=");
     Serial.print(smoothMotion.getCurrentFrequencyHz(), 2);
+    Serial.print(" baseV=");
+    Serial.print(smoothMotion.getCurrentFrequencyHz() / PULSES_PER_METER, 4);
+    Serial.print(" leftHz=");
+    Serial.print(smoothMotion.getLeftFrequencyHz(), 2);
+    Serial.print(" rightHz=");
+    Serial.print(smoothMotion.getRightFrequencyHz(), 2);
     Serial.print(" distMoved=");
     Serial.print(distMoved, 4);
     Serial.print(" distRemain=");
@@ -1782,6 +1793,8 @@ void printNavBrief() {
     Serial.print(lastNavVCmd, 4);
     Serial.print(" wCmd=");
     Serial.print(lastNavWCmd, 4);
+    Serial.print(" currentTag=");
+    Serial.print(currentTagId);
     Serial.print(" expectedNext=");
     Serial.print(expectedNextTagId);
     Serial.print(" poseId=");
@@ -1791,7 +1804,13 @@ void printNavBrief() {
     Serial.print(" yM=");
     Serial.print(pose.yM, 4);
     Serial.print(" yaw=");
-    Serial.println(pose.yawDeg, 2);
+    Serial.print(pose.yawDeg, 2);
+    Serial.print(" imu=");
+    Serial.print(navLastImuYawDeg, 2);
+    Serial.print(" targetHeading=");
+    Serial.print(navTargetHeadingDeg, 2);
+    Serial.print(" headingError=");
+    Serial.println(navLastHeadingErrorDeg, 2);
 }
 
 void printNavStartGateWait() {
@@ -1830,9 +1849,9 @@ void printNavMotorBrief() {
     Serial.print(" wCmd=");
     Serial.print(lastNavWCmd, 4);
     Serial.print(" leftHz=");
-    Serial.print(smoothMotion.getCurrentFrequencyHz(), 2);
+    Serial.print(smoothMotion.getLeftFrequencyHz(), 2);
     Serial.print(" rightHz=");
-    Serial.print(smoothMotion.getCurrentFrequencyHz(), 2);
+    Serial.print(smoothMotion.getRightFrequencyHz(), 2);
     Serial.print(" leftSteps=");
     Serial.print(leftSteps);
     Serial.print(" rightSteps=");
@@ -2005,39 +2024,44 @@ void updateNavigationController() {
             break;
 
         case NAV_CAPTURE_HEADING: {
-            if (!NAV_USE_IMU_HEADING) {
-                navTargetHeadingDeg = residualTagYawDeg;
-                expectedNextTagId = NAV_FIRST_TAG_ID + 1;
-                navTagStableStartMs = 0;
-                resetNavSegmentTracking();
-                drive.stop();
-                smoothMotion.startForwardDistance(
-                    NAV_TAG_SPACING_M,
-                    NAV_TEST_MAX_HZ
-                );
-                navSmoothDistanceOffsetM = 0.0f;
-                navSmoothExtensionStarted = false;
-                lastNavVCmd =
-                    smoothMotion.getCurrentFrequencyHz() / PULSES_PER_METER;
-                lastNavWCmd = 0.0f;
-                navState = NAV_CRUISE;
+            drive.stop();
+            smoothMotion.emergencyStop();
 
-                Serial.print("NAV CRUISE START NO_IMU residualYaw=");
-                Serial.println(residualTagYawDeg, 2);
-                break;
+            if (NAV_FULL_IMU_CALIBRATE_AT_START) {
+                Serial.println("IMU_CALIBRATING");
+                if (!imu.recalibrate()) {
+                    navState = NAV_ERROR;
+                    Serial.println("NAV ERROR IMU CALIBRATION FAILED");
+                    break;
+                }
+                Serial.println("IMU_READY");
             }
 
+            imu.resetHeadingZero();
+            Serial.println("IMU ZERO DONE");
+
+            residualTagYawDeg = pose.yawDeg;
             const float imu0 = getNavImuYawDeg();
             navTargetHeadingDeg = normalizeAngleDeg(
-                imu0 + NAV_TAG_YAW_TO_IMU_SIGN * residualTagYawDeg
+                NAV_TAG_YAW_TO_IMU_SIGN * residualTagYawDeg
             );
-            expectedNextTagId = NAV_FIRST_TAG_ID + 1;
-            navTagStableStartMs = 0;
-            resetNavSegmentTracking();
-            lastNavVCmd = 0.0f;
             navLastImuYawDeg = imu0;
             navLastHeadingErrorDeg = 0.0f;
             lastNavWCmd = 0.0f;
+            navHeadingIntegral = 0.0f;
+            navHeadingPreviousErrorDeg = 0.0f;
+            navHeadingLastUpdateMs = millis();
+            expectedNextTagId = NAV_FIRST_TAG_ID + 1;
+            navTagStableStartMs = 0;
+            resetNavSegmentTracking();
+            smoothMotion.startForwardDistance(
+                NAV_TAG_SPACING_M,
+                NAV_TEST_MAX_HZ
+            );
+            navSmoothDistanceOffsetM = 0.0f;
+            navSmoothExtensionStarted = false;
+            lastNavVCmd =
+                smoothMotion.getCurrentFrequencyHz() / PULSES_PER_METER;
             navState = NAV_CRUISE;
 
             Serial.print("NAV CRUISE START residualYaw=");
@@ -2069,9 +2093,39 @@ void updateNavigationController() {
                 navSmoothExtensionStarted = true;
             }
 
+            navLastImuYawDeg = getNavImuYawDeg();
+            navLastHeadingErrorDeg = normalizeAngleDeg(
+                navTargetHeadingDeg - navLastImuYawDeg
+            );
+
+            unsigned long headingNowMs = millis();
+            float headingDtSec =
+                (headingNowMs - navHeadingLastUpdateMs) / 1000.0f;
+            if (headingDtSec > 0.0f) {
+                navHeadingIntegral += navLastHeadingErrorDeg * headingDtSec;
+                float headingDerivative =
+                    (navLastHeadingErrorDeg - navHeadingPreviousErrorDeg) /
+                    headingDtSec;
+                lastNavWCmd = -(
+                    NAV_HEADING_KP * navLastHeadingErrorDeg +
+                    NAV_HEADING_KI * navHeadingIntegral +
+                    NAV_HEADING_KD * headingDerivative
+                );
+                lastNavWCmd = clampFloat(
+                    lastNavWCmd,
+                    -NAV_HEADING_W_MAX_RADPS,
+                    NAV_HEADING_W_MAX_RADPS
+                );
+                navHeadingPreviousErrorDeg = navLastHeadingErrorDeg;
+                navHeadingLastUpdateMs = headingNowMs;
+            }
+
+            if (!NAV_USE_IMU_HEADING) {
+                lastNavWCmd = 0.0f;
+            }
+            smoothMotion.setSteeringCorrection(lastNavWCmd, WHEEL_BASE_M);
             lastNavVCmd =
                 smoothMotion.getCurrentFrequencyHz() / PULSES_PER_METER;
-            lastNavWCmd = 0.0f;
             printNavMotorBrief();
 
             if (isExpectedNextTagVisibleForNav()) {
@@ -2165,6 +2219,9 @@ void printHelp() {
     Serial.println("  NAV STOP");
     Serial.println("  NAV RESET");
     Serial.println("  NAV STATUS");
+    Serial.println("  IMU STATUS");
+    Serial.println("  IMU CALIBRATE");
+    Serial.println("  IMU ZERO");
     Serial.println("  TEST VEL <v> <w> <ms>");
     Serial.println("  TEST SMOOTH HZ <hz> <distance_m>");
     Serial.println("  TEST SMOOTH VEL <speed_mps> <distance_m>");
@@ -2210,6 +2267,20 @@ void printStatus() {
 
     Serial.print("Expected next tag id: ");
     Serial.println(expectedNextTagId);
+
+    Serial.print("IMU ready: ");
+    Serial.println(imu.isReady() ? "YES" : "NO");
+
+    Serial.print("IMU headingDeg: ");
+    Serial.println(imu.getHeadingDeg(), 2);
+
+    Serial.print("navTargetHeadingDeg: ");
+    Serial.println(navTargetHeadingDeg, 2);
+
+    Serial.print("headingErrorDeg: ");
+    Serial.println(normalizeAngleDeg(
+        navTargetHeadingDeg - imu.getHeadingDeg()
+    ), 2);
 
     Serial.print("Tag visible: ");
     Serial.println(tag.visible ? "YES" : "NO");
@@ -2306,6 +2377,17 @@ void printNavStatus() {
     Serial.print("navTargetHeadingDeg: ");
     Serial.println(navTargetHeadingDeg, 2);
 
+    Serial.print("IMU ready: ");
+    Serial.println(imu.isReady() ? "YES" : "NO");
+
+    Serial.print("IMU headingDeg: ");
+    Serial.println(imu.getHeadingDeg(), 2);
+
+    Serial.print("headingErrorDeg: ");
+    Serial.println(normalizeAngleDeg(
+        navTargetHeadingDeg - imu.getHeadingDeg()
+    ), 2);
+
     Serial.print("poseVisible: ");
     Serial.println(pose.visible ? "YES" : "NO");
 
@@ -2333,6 +2415,31 @@ void printNavStatus() {
     Serial.print("rightSteps: ");
     Serial.println(rightMotor.getStepCount());
 
+    Serial.println("----------------------");
+}
+
+void printImuStatus() {
+    ImuOrientation orientation = imu.getOrientation();
+
+    Serial.println("----- IMU STATUS -----");
+    Serial.print("imuState: ");
+    Serial.println(imu.getStateText());
+    Serial.print("imuReady: ");
+    Serial.println(imu.isReady() ? "YES" : "NO");
+    Serial.print("rollDeg: ");
+    Serial.println(orientation.roll_deg, 2);
+    Serial.print("pitchDeg: ");
+    Serial.println(orientation.pitch_deg, 2);
+    Serial.print("yawDeg: ");
+    Serial.println(orientation.yaw_deg, 2);
+    Serial.print("headingDeg: ");
+    Serial.println(imu.getHeadingDeg(), 2);
+    Serial.print("gyroOffsetX: ");
+    Serial.println(imu.getGyroOffsetX(), 3);
+    Serial.print("gyroOffsetY: ");
+    Serial.println(imu.getGyroOffsetY(), 3);
+    Serial.print("gyroOffsetZ: ");
+    Serial.println(imu.getGyroOffsetZ(), 3);
     Serial.println("----------------------");
 }
 
@@ -2489,6 +2596,37 @@ void handleCommand(String cmd) {
 
     if (cmd == "STATUS") {
         printStatus();
+        return;
+    }
+
+    if (cmd == "IMU STATUS") {
+        printImuStatus();
+        return;
+    }
+
+    if (cmd == "IMU CALIBRATE") {
+        velocityTestActive = false;
+        smoothTestActive = false;
+        navEnabled = false;
+        navState = NAV_IDLE;
+        alignEnabled = false;
+        drive.stop();
+        smoothMotion.emergencyStop();
+        Serial.println("IMU_CALIBRATING");
+        if (imu.recalibrate()) {
+            Serial.println("IMU_READY");
+            Serial.print("HEADING:");
+            Serial.println(imu.getHeadingDeg(), 2);
+        } else {
+            Serial.println("IMU_ERROR");
+        }
+        return;
+    }
+
+    if (cmd == "IMU ZERO") {
+        imu.resetHeadingZero();
+        navLastImuYawDeg = imu.getHeadingDeg();
+        Serial.println("IMU ZERO DONE");
         return;
     }
 
@@ -2972,7 +3110,12 @@ void setup() {
     setupMotorTimer();
     smoothMotion.begin();
 
+    if (!imu.begin()) {
+        Serial.println("IMU_ERROR");
+    }
+
     printHelp();
+    printImuStatus();
 
     Serial.println("Robot constants:");
     Serial.print("  Wheel circumference m: ");
@@ -3010,6 +3153,8 @@ void setup() {
 }
 
 void loop() {
+    imu.update();
+
     while (Serial.available()) {
         char c = Serial.read();
 

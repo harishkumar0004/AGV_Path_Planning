@@ -168,7 +168,8 @@ constexpr float POSE_TRIAL_POSITION_READY_M = 0.0040f;
 
 constexpr int NAV_FIRST_TAG_ID = 0;
 constexpr int NAV_FINAL_TAG_ID = 1;
-constexpr bool NAV_USE_IMU_HEADING = false;
+constexpr bool NAV_USE_IMU_HEADING = true;
+constexpr bool NAV_FULL_IMU_CALIBRATE_AT_START = false;
 constexpr bool NAV_BYPASS_START_LOCAL_ALIGN = true;
 
 constexpr float NAV_START_GATE_X_M = 0.012f;
@@ -204,6 +205,10 @@ constexpr float NAV_TAG_MAX_ABS_Y_M = 0.030f;
 constexpr float NAV_TAG_MAX_ABS_YAW_DEG = 35.0f;
 
 constexpr float NAV_TAG_YAW_TO_IMU_SIGN = 1.0f;
+constexpr float NAV_HEADING_KP = 0.006f;
+constexpr float NAV_HEADING_KI = 0.000f;
+constexpr float NAV_HEADING_KD = 0.000f;
+constexpr float NAV_HEADING_W_MAX_RADPS = 0.035f;
 constexpr float NAV_TAG_X_TO_HEADING_DEG_PER_M = -80.0f;
 constexpr float NAV_TAG_YAW_TO_HEADING_GAIN = 0.30f;
 constexpr float NAV_TAG_CORRECTION_MAX_DEG = 4.0f;

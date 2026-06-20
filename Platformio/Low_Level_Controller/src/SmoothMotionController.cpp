@@ -26,6 +26,7 @@ void SmoothMotionController::startForwardDistance(
     float maxFrequencyHz
 ) {
     emergencyStop();
+    _steeringAngularVelocityRadps = 0.0f;
 
     uint32_t totalSteps = (uint32_t)(
         fabs(distanceM) * _pulsesPerMeter + 0.5f
@@ -38,8 +39,10 @@ void SmoothMotionController::startForwardDistance(
     _left.setDirection(true);
     _right.setDirection(true);
     applyFrequency(initialState.targetFrequencyHz);
-    _left.start(totalSteps);
-    _right.start(totalSteps);
+    // The profile stops on average wheel steps. Continuous wheel counters allow
+    // a steering differential without forcing both wheels to the same distance.
+    _left.startContinuous();
+    _right.startContinuous();
 
     _running = true;
     _continuous = false;
@@ -53,6 +56,7 @@ void SmoothMotionController::startForwardDistance(
 
 void SmoothMotionController::startForwardContinuous(float maxFrequencyHz) {
     emergencyStop();
+    _steeringAngularVelocityRadps = 0.0f;
 
     uint32_t accelerationSteps = (uint32_t)(
         (maxFrequencyHz * maxFrequencyHz) /
@@ -108,6 +112,9 @@ void SmoothMotionController::emergencyStop() {
     _continuous = false;
     _stopping = false;
     _currentFrequencyHz = 0.0f;
+    _leftFrequencyHz = 0.0f;
+    _rightFrequencyHz = 0.0f;
+    _steeringAngularVelocityRadps = 0.0f;
     _phase = SMOOTH_IDLE;
 }
 
@@ -132,7 +139,20 @@ void SmoothMotionController::update() {
         return;
     }
 
-    applyFrequency(state.targetFrequencyHz);
+    applySteeredFrequencies(state.targetFrequencyHz);
+}
+
+
+void SmoothMotionController::setSteeringCorrection(
+    float angularVelocityRadps,
+    float wheelBaseM
+) {
+    _steeringAngularVelocityRadps = angularVelocityRadps;
+    _wheelBaseM = wheelBaseM;
+
+    if (_running) {
+        applySteeredFrequencies(_currentFrequencyHz);
+    }
 }
 
 
@@ -148,6 +168,16 @@ float SmoothMotionController::getDistanceMovedM() const {
 
 float SmoothMotionController::getCurrentFrequencyHz() const {
     return _currentFrequencyHz;
+}
+
+
+float SmoothMotionController::getLeftFrequencyHz() const {
+    return _leftFrequencyHz;
+}
+
+
+float SmoothMotionController::getRightFrequencyHz() const {
+    return _rightFrequencyHz;
 }
 
 
@@ -185,11 +215,39 @@ uint32_t SmoothMotionController::averageStepCount() const {
 
 void SmoothMotionController::applyFrequency(float frequencyHz) {
     if (frequencyHz < 1.0f) frequencyHz = 1.0f;
-    if (fabs(frequencyHz - _currentFrequencyHz) < 0.5f) return;
-
     _currentFrequencyHz = frequencyHz;
-    _left.setFrequency(frequencyHz);
-    _right.setFrequency(frequencyHz);
+    _leftFrequencyHz = frequencyHz;
+    _rightFrequencyHz = frequencyHz;
+    _left.setFrequency(_leftFrequencyHz);
+    _right.setFrequency(_rightFrequencyHz);
+}
+
+
+void SmoothMotionController::applySteeredFrequencies(float baseFrequencyHz) {
+    if (baseFrequencyHz < 1.0f) baseFrequencyHz = 1.0f;
+
+    float baseMps = baseFrequencyHz / _pulsesPerMeter;
+    float halfDifferentialMps =
+        _steeringAngularVelocityRadps * _wheelBaseM * 0.5f;
+    float leftHz = fabs(baseMps - halfDifferentialMps) * _pulsesPerMeter;
+    float rightHz = fabs(baseMps + halfDifferentialMps) * _pulsesPerMeter;
+
+    if (leftHz < 1.0f) leftHz = 1.0f;
+    if (rightHz < 1.0f) rightHz = 1.0f;
+
+    bool baseChanged = fabs(baseFrequencyHz - _currentFrequencyHz) >= 0.5f;
+    bool leftChanged = fabs(leftHz - _leftFrequencyHz) >= 0.5f;
+    bool rightChanged = fabs(rightHz - _rightFrequencyHz) >= 0.5f;
+    _currentFrequencyHz = baseFrequencyHz;
+
+    if (baseChanged || leftChanged) {
+        _leftFrequencyHz = leftHz;
+        _left.setFrequency(leftHz);
+    }
+    if (baseChanged || rightChanged) {
+        _rightFrequencyHz = rightHz;
+        _right.setFrequency(rightHz);
+    }
 }
 
 
@@ -200,5 +258,8 @@ void SmoothMotionController::finishMotion() {
     _continuous = false;
     _stopping = false;
     _currentFrequencyHz = 0.0f;
+    _leftFrequencyHz = 0.0f;
+    _rightFrequencyHz = 0.0f;
+    _steeringAngularVelocityRadps = 0.0f;
     _phase = SMOOTH_COMPLETE;
 }
