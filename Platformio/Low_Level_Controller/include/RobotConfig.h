@@ -168,13 +168,16 @@ constexpr float POSE_TRIAL_POSITION_READY_M = 0.0040f;
 
 constexpr int NAV_FIRST_TAG_ID = 0;
 constexpr int NAV_FINAL_TAG_ID = 1;
+constexpr bool NAV_USE_IMU_HEADING = false;
+
 constexpr float NAV_TAG_SPACING_M = 0.50f;
-constexpr float NAV_V_MAX_MPS = 0.050f;
-constexpr float NAV_MIN_V_MPS = 0.015f;
-constexpr float NAV_ACCEL_MPS2 = 0.050f;
-constexpr float NAV_DECEL_MPS2 = 0.050f;
+constexpr float NAV_TEST_V_MAX_MPS = 0.025f;
+constexpr float NAV_TEST_V_MIN_MPS = 0.010f;
+constexpr float NAV_TEST_ACCEL_MPS2 = 0.020f;
+constexpr float NAV_TEST_DECEL_MPS2 = 0.020f;
 constexpr float NAV_EXPECTED_TAG_SLOW_ZONE_M = 0.15f;
-constexpr float NAV_TAG_CAPTURE_SPEED_MPS = 0.030f;
+constexpr float NAV_TAG_CAPTURE_SPEED_MPS = 0.015f;
+constexpr float NAV_SEGMENT_MAX_DISTANCE_M = 0.60f;
 
 constexpr float NAV_START_GOOD_X_M = 0.004f;
 constexpr float NAV_START_GOOD_Y_M = 0.006f;
