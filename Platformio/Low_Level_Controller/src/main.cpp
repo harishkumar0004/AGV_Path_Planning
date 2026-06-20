@@ -65,7 +65,8 @@ enum AlignInputMode {
     ALIGN_INPUT_PIXEL,
     ALIGN_INPUT_POSE,
     ALIGN_INPUT_POSE_TRACK,
-    ALIGN_INPUT_POSE_GEOMETRIC
+    ALIGN_INPUT_POSE_GEOMETRIC,
+    ALIGN_INPUT_POSE_PRIMITIVE
 };
 
 AlignInputMode alignInputMode = ALIGN_INPUT_PIXEL;
@@ -92,6 +93,41 @@ unsigned long pgTurnMs = 0;
 unsigned long pgCreepMs = 0;
 float pgTargetAngleDeg = 0.0f;
 unsigned long lastPoseGeoPrintMs = 0;
+
+enum PosePrimitiveState {
+    PP_SELECT,
+    PP_EXECUTE,
+    PP_SETTLE,
+    PP_ALIGNED,
+    PP_LOST,
+    PP_UNSAFE
+};
+
+struct MotionPrimitive {
+    float v;
+    float w;
+    const char* name;
+};
+
+MotionPrimitive primitives[] = {
+    {            0.0f,             0.0f, "STOP" },
+    {     POSE_PRIM_V,             0.0f, "FWD" },
+    {    -POSE_PRIM_V,             0.0f, "BACK" },
+    {     POSE_PRIM_V,      POSE_PRIM_W, "FWD_CW" },
+    {     POSE_PRIM_V,     -POSE_PRIM_W, "FWD_CCW" },
+    {    -POSE_PRIM_V,      POSE_PRIM_W, "BACK_CW" },
+    {    -POSE_PRIM_V,     -POSE_PRIM_W, "BACK_CCW" },
+    {            0.0f,      POSE_PRIM_W, "ROT_CW" },
+    {            0.0f,     -POSE_PRIM_W, "ROT_CCW" }
+};
+
+PosePrimitiveState ppState = PP_SELECT;
+unsigned long ppStateStartMs = 0;
+float ppSelectedV = 0.0f;
+float ppSelectedW = 0.0f;
+const char* ppSelectedName = "NONE";
+float ppSelectedCost = 0.0f;
+unsigned long lastPosePrimitivePrintMs = 0;
 
 enum AlignState {
     WAIT_TAG,
@@ -249,6 +285,7 @@ const char* alignInputModeName() {
         case ALIGN_INPUT_POSE: return "POSE";
         case ALIGN_INPUT_POSE_TRACK: return "TRACK";
         case ALIGN_INPUT_POSE_GEOMETRIC: return "GEOMETRIC";
+        case ALIGN_INPUT_POSE_PRIMITIVE: return "PRIMITIVE";
         default: return "UNKNOWN";
     }
 }
@@ -263,6 +300,18 @@ const char* poseGeoStateName(PoseGeoState state) {
         case PG_ALIGNED: return "ALIGNED";
         case PG_LOST: return "LOST";
         case PG_UNSAFE: return "UNSAFE";
+        default: return "UNKNOWN";
+    }
+}
+
+const char* posePrimitiveStateName(PosePrimitiveState state) {
+    switch (state) {
+        case PP_SELECT: return "SELECT";
+        case PP_EXECUTE: return "EXECUTE";
+        case PP_SETTLE: return "SETTLE";
+        case PP_ALIGNED: return "ALIGNED";
+        case PP_LOST: return "LOST";
+        case PP_UNSAFE: return "UNSAFE";
         default: return "UNKNOWN";
     }
 }
@@ -1064,7 +1113,184 @@ void updatePoseGeometricController() {
     printPoseGeoBrief(x, y, yaw, dist, v, w);
 }
 
+void predictMotionPrimitive(
+    float x,
+    float y,
+    float yawDeg,
+    const MotionPrimitive& primitive,
+    float& xPred,
+    float& yPred,
+    float& yawPred
+) {
+    yawPred = yawDeg - (primitive.w * POSE_PRIM_DT_SEC * 180.0f / PI);
+    yPred = y - (primitive.v * POSE_PRIM_DT_SEC);
+    xPred = x - (primitive.w * POSE_PRIM_DT_SEC * 0.08f);
+}
+
+float motionPrimitiveCost(float xPred, float yPred, float yawPred) {
+    float edgePenalty = 0.0f;
+
+    if (fabs(xPred) > POSE_PRIM_EDGE_X_M) {
+        edgePenalty += fabs(xPred) - POSE_PRIM_EDGE_X_M;
+    }
+    if (fabs(yPred) > POSE_PRIM_EDGE_Y_M) {
+        edgePenalty += fabs(yPred) - POSE_PRIM_EDGE_Y_M;
+    }
+
+    return
+        POSE_PRIM_WX * fabs(xPred) +
+        POSE_PRIM_WY * fabs(yPred) +
+        POSE_PRIM_WYAW * fabs(yawPred) +
+        POSE_PRIM_WEDGE * edgePenalty;
+}
+
+void printPosePrimitiveBrief(float x, float y, float yaw) {
+    unsigned long now = millis();
+    if (now - lastPosePrimitivePrintMs < 200) {
+        return;
+    }
+    lastPosePrimitivePrintMs = now;
+
+    Serial.print("POSE_PRIM state=");
+    Serial.print(posePrimitiveStateName(ppState));
+    Serial.print(" xM=");
+    Serial.print(x, 4);
+    Serial.print(" yM=");
+    Serial.print(y, 4);
+    Serial.print(" yaw=");
+    Serial.print(yaw, 2);
+    Serial.print(" selected=");
+    Serial.print(ppSelectedName);
+    Serial.print(" v=");
+    Serial.print(ppSelectedV, 4);
+    Serial.print(" w=");
+    Serial.print(ppSelectedW, 4);
+    Serial.print(" cost=");
+    Serial.println(ppSelectedCost, 4);
+}
+
+void updatePosePrimitiveController() {
+    if (!alignEnabled) {
+        drive.stop();
+        ppState = PP_SELECT;
+        return;
+    }
+
+    float x = pose.xM;
+    float y = pose.yM;
+    float yaw = pose.yawDeg;
+
+    if (!pose.visible || isPoseTimedOut()) {
+        drive.stop();
+        ppState = PP_LOST;
+        printPosePrimitiveBrief(x, y, yaw);
+        return;
+    }
+
+    float absX = fabs(x);
+    float absY = fabs(y);
+    float absYaw = fabs(yaw);
+
+    if (absX > POSE_PRIM_UNSAFE_X_M ||
+        absY > POSE_PRIM_UNSAFE_Y_M ||
+        absYaw > POSE_PRIM_UNSAFE_YAW_DEG) {
+        drive.stop();
+        ppState = PP_UNSAFE;
+        printPosePrimitiveBrief(x, y, yaw);
+        return;
+    }
+
+    unsigned long now = millis();
+
+    switch (ppState) {
+        case PP_SELECT: {
+            drive.stop();
+
+            if (absX < POSE_PRIM_XY_TOL_M &&
+                absY < POSE_PRIM_XY_TOL_M &&
+                absYaw < POSE_PRIM_YAW_TOL_DEG) {
+                ppState = PP_ALIGNED;
+                ppSelectedV = 0.0f;
+                ppSelectedW = 0.0f;
+                ppSelectedName = "STOP";
+                ppSelectedCost = 0.0f;
+                break;
+            }
+
+            float bestCost = 1.0e9f;
+            const size_t primitiveCount = sizeof(primitives) / sizeof(primitives[0]);
+
+            for (size_t i = 0; i < primitiveCount; ++i) {
+                float xPred = 0.0f;
+                float yPred = 0.0f;
+                float yawPred = 0.0f;
+                predictMotionPrimitive(
+                    x,
+                    y,
+                    yaw,
+                    primitives[i],
+                    xPred,
+                    yPred,
+                    yawPred
+                );
+                float cost = motionPrimitiveCost(xPred, yPred, yawPred);
+
+                if (cost < bestCost) {
+                    bestCost = cost;
+                    ppSelectedV = primitives[i].v;
+                    ppSelectedW = primitives[i].w;
+                    ppSelectedName = primitives[i].name;
+                }
+            }
+
+            ppSelectedCost = bestCost;
+            ppState = PP_EXECUTE;
+            ppStateStartMs = now;
+            break;
+        }
+
+        case PP_EXECUTE:
+            drive.setRobotVelocity(ppSelectedV, ppSelectedW);
+            if (now - ppStateStartMs >= POSE_PRIM_EXEC_MS) {
+                drive.stop();
+                ppState = PP_SETTLE;
+                ppStateStartMs = now;
+            }
+            break;
+
+        case PP_SETTLE:
+            drive.stop();
+            if (now - ppStateStartMs >= POSE_PRIM_SETTLE_MS) {
+                ppState = PP_SELECT;
+                ppStateStartMs = now;
+            }
+            break;
+
+        case PP_ALIGNED:
+            drive.stop();
+            if (absX >= POSE_PRIM_XY_TOL_M ||
+                absY >= POSE_PRIM_XY_TOL_M ||
+                absYaw >= POSE_PRIM_YAW_TOL_DEG) {
+                ppState = PP_SELECT;
+                ppStateStartMs = now;
+            }
+            break;
+
+        case PP_LOST:
+        case PP_UNSAFE:
+            drive.stop();
+            break;
+    }
+
+    printPosePrimitiveBrief(x, y, yaw);
+}
+
 void updateAlignmentController() {
+    if (alignInputMode == ALIGN_INPUT_POSE_PRIMITIVE) {
+        updatePosePrimitiveController();
+        return;
+    }
+
     if (alignInputMode == ALIGN_INPUT_POSE_GEOMETRIC) {
         updatePoseGeometricController();
         return;
@@ -1114,6 +1340,7 @@ void printHelp() {
     Serial.println("  ALIGN MODE POSE");
     Serial.println("  ALIGN MODE TRACK");
     Serial.println("  ALIGN MODE GEOMETRIC");
+    Serial.println("  ALIGN MODE PRIMITIVE");
     Serial.println("  TAG <id> <x_norm> <y_norm> <theta_deg>");
     Serial.println("  TAGPOSE <id> <x_m> <y_m> <yaw_deg>");
     Serial.println("  TAG LOST");
@@ -1419,6 +1646,25 @@ void handleCommand(String cmd) {
         alignState = WAIT_TAG;
         lastRobotCommand = "ALIGN_STOP";
         Serial.println("ALIGN INPUT MODE: GEOMETRIC");
+        return;
+    }
+
+    if (cmd == "ALIGN MODE PRIMITIVE") {
+        alignInputMode = ALIGN_INPUT_POSE_PRIMITIVE;
+        drive.stop();
+        lastAlignV = 999.0f;
+        lastAlignW = 999.0f;
+        resetXStepState();
+        resetPoseXStepState();
+        ppState = PP_SELECT;
+        ppStateStartMs = millis();
+        ppSelectedV = 0.0f;
+        ppSelectedW = 0.0f;
+        ppSelectedName = "NONE";
+        ppSelectedCost = 0.0f;
+        alignState = WAIT_TAG;
+        lastRobotCommand = "ALIGN_STOP";
+        Serial.println("ALIGN INPUT MODE: PRIMITIVE");
         return;
     }
 

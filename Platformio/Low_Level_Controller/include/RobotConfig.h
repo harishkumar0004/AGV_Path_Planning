@@ -54,7 +54,7 @@ constexpr float POSE_X_TOL_M = 0.0025f;       // 2.5 mm
 constexpr float POSE_Y_TOL_M = 0.0025f;       // 2.5 mm
 constexpr float POSE_X_SAFE_M = 0.0080f;      // 8 mm
 constexpr float POSE_Y_SAFE_M = 0.0080f;      // 8 mm
-constexpr float POSE_YAW_TOL_DEG = 1.0f;
+constexpr float POSE_YAW_TOL_DEG = 0.5f;
 constexpr float POSE_ROUGH_YAW_TOL_DEG = 8.0f;
 constexpr float POSE_LOCAL_UNSAFE_M = 0.015f;
 
@@ -115,6 +115,30 @@ constexpr unsigned long POSE_GEO_SETTLE_MS = 250;
 
 constexpr float POSE_GEO_FINAL_YAW_KW = 0.004f;
 constexpr float POSE_GEO_FINAL_YAW_W_MAX = 0.025f;
+
+// Motion-primitive pose alignment
+
+constexpr float POSE_PRIM_XY_TOL_M = 0.0025f;
+constexpr float POSE_PRIM_YAW_TOL_DEG = 1.0f;
+
+constexpr float POSE_PRIM_UNSAFE_X_M = 0.018f;
+constexpr float POSE_PRIM_UNSAFE_Y_M = 0.018f;
+constexpr float POSE_PRIM_UNSAFE_YAW_DEG = 30.0f;
+
+constexpr float POSE_PRIM_DT_SEC = 0.15f;
+constexpr unsigned long POSE_PRIM_EXEC_MS = 150;
+constexpr unsigned long POSE_PRIM_SETTLE_MS = 120;
+
+constexpr float POSE_PRIM_V = 0.0020f;
+constexpr float POSE_PRIM_W = 0.025f;
+
+constexpr float POSE_PRIM_WX = 4.0f;
+constexpr float POSE_PRIM_WY = 4.0f;
+constexpr float POSE_PRIM_WYAW = 0.08f;
+constexpr float POSE_PRIM_WEDGE = 20.0f;
+
+constexpr float POSE_PRIM_EDGE_X_M = 0.014f;
+constexpr float POSE_PRIM_EDGE_Y_M = 0.014f;
 
 // ESP32 motor timer
 // 20 us interrupt = 50 kHz timer rate
