@@ -1,6 +1,7 @@
 import argparse
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -15,6 +16,22 @@ from agv_high_level.perception.tag_pose_streamer import TagPoseStreamer
 
 WINDOW_NAME = "AGV Real AprilTag TAGPOSE Stream"
 POSE_PRINT_PERIOD_SEC = 0.2
+
+
+@dataclass
+class ESP32NavTelemetry:
+    nav_state: str = "UNKNOWN"
+    current_tag: int | None = None
+    expected_next: int | None = None
+    pose_id: int | None = None
+    imu_heading_deg: float | None = None
+    target_heading_deg: float | None = None
+    heading_error_deg: float | None = None
+    v_cmd: float | None = None
+    w_cmd: float | None = None
+    aligned: str = "NO"
+    message: str = ""
+    last_update_time: float = 0.0
 
 
 class FPSCounter:
@@ -43,8 +60,102 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def print_esp32_lines(client: ESP32Client) -> None:
+def parse_nav_fields(line: str) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for token in line.split():
+        key, separator, value = token.partition("=")
+        if separator:
+            fields[key] = value
+    return fields
+
+
+def update_nav_telemetry(line: str, telemetry: ESP32NavTelemetry) -> None:
+    now = time.monotonic()
+
+    if line.startswith("NAV state="):
+        fields = parse_nav_fields(line)
+        telemetry.nav_state = fields.get("state", telemetry.nav_state)
+        telemetry.current_tag = parse_int(
+            fields.get("currentTag", fields.get("segment")),
+            telemetry.current_tag,
+        )
+        telemetry.expected_next = parse_int(
+            fields.get("expectedNext"), telemetry.expected_next
+        )
+        telemetry.pose_id = parse_int(fields.get("poseId"), telemetry.pose_id)
+        telemetry.imu_heading_deg = parse_float(
+            fields.get("imu"), telemetry.imu_heading_deg
+        )
+        telemetry.target_heading_deg = parse_float(
+            fields.get("targetHeading"), telemetry.target_heading_deg
+        )
+        telemetry.heading_error_deg = parse_float(
+            fields.get("headingError"), telemetry.heading_error_deg
+        )
+        telemetry.v_cmd = parse_float(fields.get("vCmd"), telemetry.v_cmd)
+        telemetry.w_cmd = parse_float(fields.get("wCmd"), telemetry.w_cmd)
+        telemetry.aligned = fields.get("aligned", telemetry.aligned)
+
+        if telemetry.nav_state == "NAV_DONE":
+            telemetry.message = "NAV DONE"
+        elif telemetry.nav_state == "NAV_ERROR":
+            telemetry.message = "NAV ERROR"
+
+        telemetry.last_update_time = now
+        return
+
+    if line.startswith("NAV START ALIGN GOOD ENOUGH"):
+        telemetry.message = "START ALIGN GOOD ENOUGH"
+    elif line.startswith("NAV CRUISE START"):
+        telemetry.message = "CRUISE STARTED"
+    elif line.startswith("NAV CHECKPOINT"):
+        tag_id = parse_int(parse_nav_fields(line).get("tag"), None)
+        telemetry.message = f"CHECKPOINT TAG {tag_id if tag_id is not None else '?'}"
+    elif line.startswith("NAV DONE"):
+        telemetry.nav_state = "NAV_DONE"
+        telemetry.message = "NAV DONE"
+    elif line.startswith("NAV ERROR") or line.startswith("NAV START ALIGN UNSAFE"):
+        telemetry.nav_state = "NAV_ERROR"
+        telemetry.message = "NAV ERROR"
+    elif line.startswith("NAV START ALIGN LOST TAG") or line.startswith(
+        "NAV START ALIGN TIMEOUT UNSAFE"
+    ):
+        telemetry.nav_state = "NAV_ERROR"
+        telemetry.message = "NAV ERROR"
+    else:
+        return
+
+    telemetry.last_update_time = now
+
+
+def parse_int(value: str | None, fallback: int | None) -> int | None:
+    try:
+        return int(value) if value is not None else fallback
+    except ValueError:
+        return fallback
+
+
+def parse_float(value: str | None, fallback: float | None) -> float | None:
+    try:
+        return float(value) if value is not None else fallback
+    except ValueError:
+        return fallback
+
+
+def format_value(value: float | int | None, precision: int = 2) -> str:
+    if value is None:
+        return "--"
+    if isinstance(value, int):
+        return str(value)
+    return f"{value:.{precision}f}"
+
+
+def print_esp32_lines(
+    client: ESP32Client,
+    telemetry: ESP32NavTelemetry,
+) -> None:
     for line in client.read_lines():
+        update_nav_telemetry(line, telemetry)
         print(f"ESP32 {line}")
 
 
@@ -56,6 +167,7 @@ def draw_fps_overlay(
     pose: TagPose | None,
     tag_fps: float,
     visible_tag_fps: dict[int, float],
+    nav_telemetry: ESP32NavTelemetry,
 ) -> None:
     visible = pose is not None
     left_lines = [
@@ -100,6 +212,55 @@ def draw_fps_overlay(
             cv2.FONT_HERSHEY_SIMPLEX,
             0.55,
             (0, 255, 255),
+            2,
+        )
+
+    nav_left_lines = [
+        f"Nav State: {nav_telemetry.nav_state}",
+        f"Aligned: {nav_telemetry.aligned}",
+        f"Message: {nav_telemetry.message or '--'}",
+        f"Current Tag: {format_value(nav_telemetry.current_tag)}",
+        f"Expected Next: {format_value(nav_telemetry.expected_next)}",
+    ]
+    nav_right_lines = [
+        f"IMU Heading: {format_value(nav_telemetry.imu_heading_deg)}",
+        f"Target Heading: {format_value(nav_telemetry.target_heading_deg)}",
+        f"Heading Error: {format_value(nav_telemetry.heading_error_deg)}",
+        f"vCmd: {format_value(nav_telemetry.v_cmd, 4)}",
+        f"wCmd: {format_value(nav_telemetry.w_cmd, 4)}",
+    ]
+
+    for index, text in enumerate(nav_left_lines):
+        cv2.putText(
+            frame,
+            text,
+            (20, 275 + index * 25),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.48,
+            (0, 200, 255),
+            1,
+        )
+
+    for index, text in enumerate(nav_right_lines):
+        cv2.putText(
+            frame,
+            text,
+            (350, 275 + index * 25),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.48,
+            (0, 200, 255),
+            1,
+        )
+
+    telemetry_age = time.monotonic() - nav_telemetry.last_update_time
+    if nav_telemetry.last_update_time == 0.0 or telemetry_age > 1.0:
+        cv2.putText(
+            frame,
+            "ESP32 Telemetry: STALE",
+            (20, 420),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (0, 0, 255),
             2,
         )
 
@@ -148,6 +309,7 @@ def main() -> None:
     streamer = TagPoseStreamer(client)
     camera = CameraManager()
     detector = AprilTagDetector()
+    nav_telemetry = ESP32NavTelemetry()
     camera_fps_counter = FPSCounter()
     tag_fps_counters: dict[int, FPSCounter] = {}
     last_pose_print_time = 0.0
@@ -164,7 +326,7 @@ def main() -> None:
             frame = camera.get_frame()
             if frame is None:
                 streamer.update(TagPose.lost())
-                print_esp32_lines(client)
+                print_esp32_lines(client, nav_telemetry)
                 continue
 
             camera_fps = camera_fps_counter.tick()
@@ -220,7 +382,12 @@ def main() -> None:
                             f"xM={pose.x_m:.4f} yM={pose.y_m:.4f} "
                             f"zM={pose.z_m:.4f} yaw={pose.yaw_deg:.2f} "
                             f"cameraFPS={camera_fps:.1f} "
-                            f"tagFPS={selected_tag_fps:.1f}"
+                            f"tagFPS={selected_tag_fps:.1f} "
+                            f"imu={format_value(nav_telemetry.imu_heading_deg)} "
+                            f"target={format_value(nav_telemetry.target_heading_deg)} "
+                            f"headingError={format_value(nav_telemetry.heading_error_deg)} "
+                            f"navState={nav_telemetry.nav_state} "
+                            f"aligned={nav_telemetry.aligned}"
                         )
                         last_pose_print_time = now
                 else:
@@ -244,8 +411,9 @@ def main() -> None:
                 visible_pose,
                 selected_tag_fps,
                 visible_tag_fps,
+                nav_telemetry,
             )
-            print_esp32_lines(client)
+            print_esp32_lines(client, nav_telemetry)
             cv2.imshow(WINDOW_NAME, frame)
             key = cv2.waitKey(1) & 0xFF
 
@@ -284,7 +452,7 @@ def main() -> None:
         if client.connected:
             client.stop()
             time.sleep(0.1)
-            print_esp32_lines(client)
+            print_esp32_lines(client, nav_telemetry)
         client.close()
         camera.release()
         cv2.destroyAllWindows()

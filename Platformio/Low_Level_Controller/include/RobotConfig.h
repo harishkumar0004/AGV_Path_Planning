@@ -168,12 +168,24 @@ constexpr float POSE_TRIAL_POSITION_READY_M = 0.0040f;
 
 constexpr int NAV_FIRST_TAG_ID = 0;
 constexpr int NAV_FINAL_TAG_ID = 1;
-constexpr float NAV_CRUISE_SPEED_MPS = 0.025f;
+constexpr float NAV_TAG_SPACING_M = 0.50f;
+constexpr float NAV_V_MAX_MPS = 0.050f;
+constexpr float NAV_MIN_V_MPS = 0.015f;
+constexpr float NAV_ACCEL_MPS2 = 0.050f;
+constexpr float NAV_DECEL_MPS2 = 0.050f;
+constexpr float NAV_EXPECTED_TAG_SLOW_ZONE_M = 0.15f;
+constexpr float NAV_TAG_CAPTURE_SPEED_MPS = 0.030f;
 
-constexpr float NAV_START_ALIGN_X_TOL_M = 0.004f;
-constexpr float NAV_START_ALIGN_Y_TOL_M = 0.004f;
-constexpr float NAV_START_ALIGN_YAW_TOL_DEG = 2.0f;
-constexpr unsigned long NAV_START_ALIGN_STABLE_MS = 500;
+constexpr float NAV_START_GOOD_X_M = 0.004f;
+constexpr float NAV_START_GOOD_Y_M = 0.006f;
+constexpr float NAV_START_GOOD_YAW_DEG = 2.0f;
+
+constexpr float NAV_START_SAFE_X_M = 0.014f;
+constexpr float NAV_START_SAFE_Y_M = 0.014f;
+constexpr float NAV_START_SAFE_YAW_DEG = 12.0f;
+
+constexpr unsigned long NAV_START_GOOD_STABLE_MS = 400;
+constexpr unsigned long NAV_START_ALIGN_MAX_MS = 6000;
 
 constexpr unsigned long NAV_TAG_STABLE_MS = 150;
 constexpr float NAV_TAG_MAX_ABS_X_M = 0.030f;

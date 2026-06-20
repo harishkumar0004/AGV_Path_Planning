@@ -76,7 +76,7 @@ bool alignEnabled = false;
 
 enum NavState {
     NAV_IDLE,
-    NAV_START_ALIGN,
+    NAV_START_LOCAL_ALIGN,
     NAV_CAPTURE_HEADING,
     NAV_CRUISE,
     NAV_DONE,
@@ -90,7 +90,16 @@ int expectedNextTagId = 1;
 float navTargetHeadingDeg = 0.0f;
 unsigned long navTagStableStartMs = 0;
 unsigned long navLastLogMs = 0;
-float navResidualTagYawDeg = 0.0f;
+unsigned long navStartAlignBeginMs = 0;
+unsigned long navStartGoodStableStartMs = 0;
+float residualTagYawDeg = 0.0f;
+long navSegmentStartLeftSteps = 0;
+long navSegmentStartRightSteps = 0;
+unsigned long navSegmentStartMs = 0;
+float navLastVCmd = 0.0f;
+float navLastImuYawDeg = 0.0f;
+float navLastHeadingErrorDeg = 0.0f;
+float navLastWCmd = 0.0f;
 
 enum PoseGeoState {
     PG_OBSERVE,
@@ -347,19 +356,22 @@ bool isPoseTimedOut() {
     return pose.visible && (millis() - pose.lastUpdateMs > TAG_TIMEOUT_MS);
 }
 
-bool isStartTagVisible() {
-    return pose.visible &&
-           pose.id == NAV_FIRST_TAG_ID &&
-           !isPoseTimedOut();
-}
-
-bool isStartTagAligned() {
+bool isStartPoseGoodEnough() {
     return pose.visible &&
            pose.id == NAV_FIRST_TAG_ID &&
            !isPoseTimedOut() &&
-           fabs(pose.xM) < NAV_START_ALIGN_X_TOL_M &&
-           fabs(pose.yM) < NAV_START_ALIGN_Y_TOL_M &&
-           fabs(pose.yawDeg) < NAV_START_ALIGN_YAW_TOL_DEG;
+           fabs(pose.xM) < NAV_START_GOOD_X_M &&
+           fabs(pose.yM) < NAV_START_GOOD_Y_M &&
+           fabs(pose.yawDeg) < NAV_START_GOOD_YAW_DEG;
+}
+
+bool isStartPoseSafe() {
+    return pose.visible &&
+           pose.id == NAV_FIRST_TAG_ID &&
+           !isPoseTimedOut() &&
+           fabs(pose.xM) < NAV_START_SAFE_X_M &&
+           fabs(pose.yM) < NAV_START_SAFE_Y_M &&
+           fabs(pose.yawDeg) < NAV_START_SAFE_YAW_DEG;
 }
 
 bool isExpectedNextTagVisibleForNav() {
@@ -400,6 +412,24 @@ void applyTagCheckpointCorrection() {
     Serial.println(navTargetHeadingDeg, 2);
 }
 
+float getNavDistanceMovedM() {
+    long leftDelta = leftMotor.getStepCount() - navSegmentStartLeftSteps;
+    long rightDelta = rightMotor.getStepCount() - navSegmentStartRightSteps;
+    float centerPulses = 0.5f * (float)(leftDelta + rightDelta);
+    return fabs(centerPulses) / PULSES_PER_METER;
+}
+
+void resetNavSegmentTracking() {
+    navSegmentStartLeftSteps = leftMotor.getStepCount();
+    navSegmentStartRightSteps = rightMotor.getStepCount();
+    navSegmentStartMs = millis();
+}
+
+float getNavImuYawDeg() {
+    // Phase 4A fallback until an IMU interface is added to this firmware.
+    return 0.0f;
+}
+
 const char* alignInputModeName() {
     switch (alignInputMode) {
         case ALIGN_INPUT_PIXEL: return "PIXEL";
@@ -415,7 +445,7 @@ const char* alignInputModeName() {
 const char* navStateName(NavState state) {
     switch (state) {
         case NAV_IDLE: return "NAV_IDLE";
-        case NAV_START_ALIGN: return "NAV_START_ALIGN";
+        case NAV_START_LOCAL_ALIGN: return "NAV_START_LOCAL_ALIGN";
         case NAV_CAPTURE_HEADING: return "NAV_CAPTURE_HEADING";
         case NAV_CRUISE: return "NAV_CRUISE";
         case NAV_DONE: return "NAV_DONE";
@@ -1663,10 +1693,27 @@ void printNavBrief() {
 
     Serial.print("NAV state=");
     Serial.print(navStateName(navState));
-    Serial.print(" currentTag=");
+    float distMoved = getNavDistanceMovedM();
+    float distRemain = NAV_TAG_SPACING_M - distMoved;
+
+    Serial.print(" segment=");
     Serial.print(currentTagId);
     Serial.print(" expectedNext=");
     Serial.print(expectedNextTagId);
+    Serial.print(" distMoved=");
+    Serial.print(distMoved, 4);
+    Serial.print(" distRemain=");
+    Serial.print(distRemain, 4);
+    Serial.print(" vCmd=");
+    Serial.print(navLastVCmd, 4);
+    Serial.print(" imu=");
+    Serial.print(navLastImuYawDeg, 2);
+    Serial.print(" targetHeading=");
+    Serial.print(navTargetHeadingDeg, 2);
+    Serial.print(" headingError=");
+    Serial.print(navLastHeadingErrorDeg, 2);
+    Serial.print(" wCmd=");
+    Serial.print(navLastWCmd, 4);
     Serial.print(" poseId=");
     Serial.print(pose.id);
     Serial.print(" xM=");
@@ -1674,9 +1721,7 @@ void printNavBrief() {
     Serial.print(" yM=");
     Serial.print(pose.yM, 4);
     Serial.print(" yaw=");
-    Serial.print(pose.yawDeg, 2);
-    Serial.print(" targetHeading=");
-    Serial.println(navTargetHeadingDeg, 2);
+    Serial.println(pose.yawDeg, 2);
 }
 
 void updateNavigationController() {
@@ -1687,49 +1732,109 @@ void updateNavigationController() {
     unsigned long now = millis();
 
     switch (navState) {
-        case NAV_START_ALIGN:
-            if (!isStartTagVisible()) {
-                alignEnabled = false;
-                navTagStableStartMs = 0;
-                drive.stop();
-                break;
-            }
-
+        case NAV_START_LOCAL_ALIGN:
             alignInputMode = ALIGN_INPUT_POSE;
             alignEnabled = true;
 
-            if (isStartTagAligned()) {
-                if (navTagStableStartMs == 0) {
-                    navTagStableStartMs = now;
-                } else if (now - navTagStableStartMs >= NAV_START_ALIGN_STABLE_MS) {
-                    navResidualTagYawDeg = pose.yawDeg;
-                    navTagStableStartMs = 0;
+            if (isStartPoseGoodEnough()) {
+                if (navStartGoodStableStartMs == 0) {
+                    navStartGoodStableStartMs = now;
+                }
+
+                if (now - navStartGoodStableStartMs >= NAV_START_GOOD_STABLE_MS) {
+                    residualTagYawDeg = pose.yawDeg;
                     alignEnabled = false;
                     drive.stop();
                     navState = NAV_CAPTURE_HEADING;
+                    Serial.println("NAV START ALIGN GOOD ENOUGH");
+                    break;
                 }
             } else {
-                navTagStableStartMs = 0;
+                navStartGoodStableStartMs = 0;
+            }
+
+            if (pose.visible && !isPoseTimedOut() && !isStartPoseSafe()) {
+                alignEnabled = false;
+                drive.stop();
+                navState = NAV_ERROR;
+                Serial.println("NAV START ALIGN UNSAFE - tag moving out of view");
+                break;
+            }
+
+            if (!pose.visible || isPoseTimedOut()) {
+                alignEnabled = false;
+                drive.stop();
+                navState = NAV_ERROR;
+                Serial.println("NAV START ALIGN LOST TAG");
+                break;
+            }
+
+            if (now - navStartAlignBeginMs > NAV_START_ALIGN_MAX_MS) {
+                alignEnabled = false;
+                drive.stop();
+
+                if (isStartPoseSafe()) {
+                    residualTagYawDeg = pose.yawDeg;
+                    navState = NAV_CAPTURE_HEADING;
+                    Serial.println("NAV START ALIGN TIMEOUT BUT SAFE - CONTINUE");
+                } else {
+                    navState = NAV_ERROR;
+                    Serial.println("NAV START ALIGN TIMEOUT UNSAFE");
+                }
             }
             break;
 
         case NAV_CAPTURE_HEADING: {
-            const float imu0 = 0.0f;
+            const float imu0 = getNavImuYawDeg();
             navTargetHeadingDeg = normalizeAngleDeg(
-                imu0 + NAV_TAG_YAW_TO_IMU_SIGN * navResidualTagYawDeg
+                imu0 + NAV_TAG_YAW_TO_IMU_SIGN * residualTagYawDeg
             );
             expectedNextTagId = NAV_FIRST_TAG_ID + 1;
             navTagStableStartMs = 0;
+            resetNavSegmentTracking();
+            navLastVCmd = 0.0f;
+            navLastImuYawDeg = imu0;
+            navLastHeadingErrorDeg = 0.0f;
+            navLastWCmd = 0.0f;
             navState = NAV_CRUISE;
 
-            Serial.print("NAV CRUISE START targetHeading=");
+            Serial.print("NAV CRUISE START residualYaw=");
+            Serial.print(residualTagYawDeg, 2);
+            Serial.print(" targetHeading=");
             Serial.println(navTargetHeadingDeg, 2);
             break;
         }
 
-        case NAV_CRUISE:
+        case NAV_CRUISE: {
             alignEnabled = false;
-            drive.setRobotVelocity(NAV_CRUISE_SPEED_MPS, 0.0f);
+
+            float distMoved = getNavDistanceMovedM();
+            float distRemain = NAV_TAG_SPACING_M - distMoved;
+            float elapsedSinceSegmentStartSec =
+                (now - navSegmentStartMs) / 1000.0f;
+            float vAccel = NAV_ACCEL_MPS2 * elapsedSinceSegmentStartSec;
+            float vDecel = sqrtf(
+                2.0f * NAV_DECEL_MPS2 * fmaxf(distRemain, 0.0f)
+            );
+            float vCmd = fminf(NAV_V_MAX_MPS, fminf(vAccel, vDecel));
+            vCmd = fmaxf(vCmd, NAV_MIN_V_MPS);
+
+            if (distRemain < NAV_EXPECTED_TAG_SLOW_ZONE_M) {
+                vCmd = fminf(vCmd, NAV_TAG_CAPTURE_SPEED_MPS);
+            }
+
+            float imuYawDeg = getNavImuYawDeg();
+            float headingErrorDeg = normalizeAngleDeg(
+                navTargetHeadingDeg - imuYawDeg
+            );
+            float wCmd = 0.0f;
+
+            navLastVCmd = vCmd;
+            navLastImuYawDeg = imuYawDeg;
+            navLastHeadingErrorDeg = headingErrorDeg;
+            navLastWCmd = wCmd;
+
+            drive.setRobotVelocity(vCmd, wCmd);
 
             if (isExpectedNextTagVisibleForNav()) {
                 if (navTagStableStartMs == 0) {
@@ -1739,9 +1844,12 @@ void updateNavigationController() {
                     currentTagId = expectedNextTagId;
                     expectedNextTagId++;
                     navTagStableStartMs = 0;
+                    resetNavSegmentTracking();
 
                     if (currentTagId >= NAV_FINAL_TAG_ID) {
                         drive.stop();
+                        navLastVCmd = 0.0f;
+                        navLastWCmd = 0.0f;
                         navState = NAV_DONE;
                         navEnabled = false;
                         Serial.println("NAV DONE");
@@ -1751,6 +1859,7 @@ void updateNavigationController() {
                 navTagStableStartMs = 0;
             }
             break;
+        }
 
         case NAV_DONE:
             drive.stop();
@@ -2120,21 +2229,28 @@ void handleCommand(String cmd) {
 
     if (cmd == "NAV START") {
         navEnabled = true;
-        navState = NAV_START_ALIGN;
+        navState = NAV_START_LOCAL_ALIGN;
         currentTagId = NAV_FIRST_TAG_ID;
         expectedNextTagId = NAV_FIRST_TAG_ID + 1;
         navTargetHeadingDeg = 0.0f;
         navTagStableStartMs = 0;
-        navResidualTagYawDeg = 0.0f;
+        navStartAlignBeginMs = millis();
+        navStartGoodStableStartMs = 0;
+        residualTagYawDeg = 0.0f;
+        resetNavSegmentTracking();
+        navLastVCmd = 0.0f;
+        navLastImuYawDeg = 0.0f;
+        navLastHeadingErrorDeg = 0.0f;
+        navLastWCmd = 0.0f;
         alignInputMode = ALIGN_INPUT_POSE;
-        alignEnabled = false;
+        alignEnabled = true;
         lastAlignV = 999.0f;
         lastAlignW = 999.0f;
         resetXStepState();
         resetPoseXStepState();
         alignState = WAIT_TAG;
         drive.stop();
-        Serial.println("NAV STARTED");
+        Serial.println("NAV STARTED: START LOCAL ALIGN");
         return;
     }
 
@@ -2142,6 +2258,10 @@ void handleCommand(String cmd) {
         navEnabled = false;
         navState = NAV_IDLE;
         navTagStableStartMs = 0;
+        navStartAlignBeginMs = 0;
+        navStartGoodStableStartMs = 0;
+        navLastVCmd = 0.0f;
+        navLastWCmd = 0.0f;
         alignEnabled = false;
         drive.stop();
         Serial.println("NAV STOPPED");
@@ -2155,7 +2275,14 @@ void handleCommand(String cmd) {
         expectedNextTagId = NAV_FIRST_TAG_ID + 1;
         navTargetHeadingDeg = 0.0f;
         navTagStableStartMs = 0;
-        navResidualTagYawDeg = 0.0f;
+        navStartAlignBeginMs = 0;
+        navStartGoodStableStartMs = 0;
+        residualTagYawDeg = 0.0f;
+        resetNavSegmentTracking();
+        navLastVCmd = 0.0f;
+        navLastImuYawDeg = 0.0f;
+        navLastHeadingErrorDeg = 0.0f;
+        navLastWCmd = 0.0f;
         alignEnabled = false;
         drive.stop();
         Serial.println("NAV RESET");
