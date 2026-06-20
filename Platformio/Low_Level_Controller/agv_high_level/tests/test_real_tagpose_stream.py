@@ -103,6 +103,31 @@ def draw_fps_overlay(
             2,
         )
 
+    key_legend = (
+        "Keys: q quit | s stop | a align on | o align off | p pose | "
+        "n nav start | x nav stop | r nav reset | v nav status"
+    )
+    frame_height, frame_width = frame.shape[:2]
+    legend_scale = 0.45
+    legend_width = cv2.getTextSize(
+        key_legend,
+        cv2.FONT_HERSHEY_SIMPLEX,
+        legend_scale,
+        1,
+    )[0][0]
+    if legend_width > frame_width - 20:
+        legend_scale *= (frame_width - 20) / legend_width
+
+    cv2.putText(
+        frame,
+        key_legend,
+        (10, frame_height - 10),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        legend_scale,
+        (255, 255, 255),
+        1,
+    )
+
 
 def main() -> None:
     # Keep Raspberry Pi camera dependencies out of command-line parsing so
@@ -238,6 +263,21 @@ def main() -> None:
             elif key == ord("p"):
                 client.align_mode_pose()
                 print("Sent: ALIGN MODE POSE")
+            elif key == ord("n"):
+                client.nav_start()
+                print("SENT: NAV START")
+            elif key == ord("x"):
+                client.nav_stop()
+                print("SENT: NAV STOP")
+            elif key == ord("r"):
+                client.nav_reset()
+                print("SENT: NAV RESET")
+            elif key == ord("v"):
+                client.nav_status()
+                print("SENT: NAV STATUS")
+            elif key == ord("h"):
+                client.status()
+                print("SENT: STATUS")
     except KeyboardInterrupt:
         pass
     finally:
