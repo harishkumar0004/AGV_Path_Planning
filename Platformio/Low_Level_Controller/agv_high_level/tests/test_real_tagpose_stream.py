@@ -29,6 +29,10 @@ class ESP32NavTelemetry:
     heading_error_deg: float | None = None
     v_cmd: float | None = None
     w_cmd: float | None = None
+    left_hz: float | None = None
+    right_hz: float | None = None
+    left_steps: int | None = None
+    right_steps: int | None = None
     aligned: str = "NO"
     message: str = ""
     last_update_time: float = 0.0
@@ -71,6 +75,24 @@ def parse_nav_fields(line: str) -> dict[str, str]:
 
 def update_nav_telemetry(line: str, telemetry: ESP32NavTelemetry) -> None:
     now = time.monotonic()
+
+    if line.startswith("NAV MOTOR state="):
+        fields = parse_nav_fields(line)
+        telemetry.nav_state = fields.get("state", telemetry.nav_state)
+        telemetry.v_cmd = parse_float(fields.get("vCmd"), telemetry.v_cmd)
+        telemetry.w_cmd = parse_float(fields.get("wCmd"), telemetry.w_cmd)
+        telemetry.left_hz = parse_float(fields.get("leftHz"), telemetry.left_hz)
+        telemetry.right_hz = parse_float(
+            fields.get("rightHz"), telemetry.right_hz
+        )
+        telemetry.left_steps = parse_int(
+            fields.get("leftSteps"), telemetry.left_steps
+        )
+        telemetry.right_steps = parse_int(
+            fields.get("rightSteps"), telemetry.right_steps
+        )
+        telemetry.last_update_time = now
+        return
 
     if line.startswith("NAV state="):
         fields = parse_nav_fields(line)
@@ -252,12 +274,43 @@ def draw_fps_overlay(
             1,
         )
 
+    motor_left_lines = [
+        f"Left Hz: {format_value(nav_telemetry.left_hz)}",
+        f"Left Steps: {format_value(nav_telemetry.left_steps)}",
+    ]
+    motor_right_lines = [
+        f"Right Hz: {format_value(nav_telemetry.right_hz)}",
+        f"Right Steps: {format_value(nav_telemetry.right_steps)}",
+    ]
+
+    for index, text in enumerate(motor_left_lines):
+        cv2.putText(
+            frame,
+            text,
+            (20, 400 + index * 20),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.48,
+            (255, 180, 0),
+            1,
+        )
+
+    for index, text in enumerate(motor_right_lines):
+        cv2.putText(
+            frame,
+            text,
+            (350, 400 + index * 20),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.48,
+            (255, 180, 0),
+            1,
+        )
+
     telemetry_age = time.monotonic() - nav_telemetry.last_update_time
     if nav_telemetry.last_update_time == 0.0 or telemetry_age > 1.0:
         cv2.putText(
             frame,
             "ESP32 Telemetry: STALE",
-            (20, 420),
+            (20, 445),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.55,
             (0, 0, 255),

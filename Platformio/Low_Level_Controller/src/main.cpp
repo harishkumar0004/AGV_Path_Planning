@@ -103,6 +103,13 @@ float lastNavVCmd = 0.0f;
 float navLastImuYawDeg = 0.0f;
 float navLastHeadingErrorDeg = 0.0f;
 float lastNavWCmd = 0.0f;
+unsigned long navLastMotorLogMs = 0;
+
+bool velocityTestActive = false;
+unsigned long velocityTestStartMs = 0;
+unsigned long velocityTestDurationMs = 0;
+long velocityTestStartLeftSteps = 0;
+long velocityTestStartRightSteps = 0;
 
 enum PoseGeoState {
     PG_OBSERVE,
@@ -1771,6 +1778,63 @@ void printNavStartGateWait() {
     Serial.println(pose.yawDeg, 2);
 }
 
+void printNavMotorBrief() {
+    unsigned long now = millis();
+    if (now - navLastMotorLogMs < 200) {
+        return;
+    }
+    navLastMotorLogMs = now;
+
+    long leftSteps = leftMotor.getStepCount();
+    long rightSteps = rightMotor.getStepCount();
+
+    Serial.print("NAV MOTOR state=");
+    Serial.print(navStateName(navState));
+    Serial.print(" vCmd=");
+    Serial.print(lastNavVCmd, 4);
+    Serial.print(" wCmd=");
+    Serial.print(lastNavWCmd, 4);
+    Serial.print(" leftHz=");
+    Serial.print(leftMotor.getTargetHz(), 2);
+    Serial.print(" rightHz=");
+    Serial.print(rightMotor.getTargetHz(), 2);
+    Serial.print(" leftSteps=");
+    Serial.print(leftSteps);
+    Serial.print(" rightSteps=");
+    Serial.print(rightSteps);
+    Serial.print(" leftDelta=");
+    Serial.print(leftSteps - navSegmentStartLeftSteps);
+    Serial.print(" rightDelta=");
+    Serial.println(rightSteps - navSegmentStartRightSteps);
+}
+
+void updateVelocityTest() {
+    if (!velocityTestActive) {
+        return;
+    }
+
+    if (millis() - velocityTestStartMs < velocityTestDurationMs) {
+        return;
+    }
+
+    float leftHz = leftMotor.getTargetHz();
+    float rightHz = rightMotor.getTargetHz();
+    long leftDelta = leftMotor.getStepCount() - velocityTestStartLeftSteps;
+    long rightDelta = rightMotor.getStepCount() - velocityTestStartRightSteps;
+
+    drive.stop();
+    velocityTestActive = false;
+
+    Serial.print("TEST VEL DONE leftHz=");
+    Serial.print(leftHz, 2);
+    Serial.print(" rightHz=");
+    Serial.print(rightHz, 2);
+    Serial.print(" leftDelta=");
+    Serial.print(leftDelta);
+    Serial.print(" rightDelta=");
+    Serial.println(rightDelta);
+}
+
 void updateNavigationController() {
     if (!navEnabled) {
         return;
@@ -1925,6 +1989,7 @@ void updateNavigationController() {
             lastNavWCmd = wCmd;
 
             drive.setRobotVelocity(vCmd, wCmd);
+            printNavMotorBrief();
 
             if (isExpectedNextTagVisibleForNav()) {
                 if (navTagStableStartMs == 0) {
@@ -2010,6 +2075,7 @@ void printHelp() {
     Serial.println("  NAV STOP");
     Serial.println("  NAV RESET");
     Serial.println("  NAV STATUS");
+    Serial.println("  TEST VEL <v> <w> <ms>");
     Serial.println();
     Serial.println("Other:");
     Serial.println("  S         -> stop and disable alignment");
@@ -2163,6 +2229,18 @@ void printNavStatus() {
     Serial.print("pose yawDeg: ");
     Serial.println(pose.yawDeg, 2);
 
+    Serial.print("leftHz: ");
+    Serial.println(leftMotor.getTargetHz(), 2);
+
+    Serial.print("rightHz: ");
+    Serial.println(rightMotor.getTargetHz(), 2);
+
+    Serial.print("leftSteps: ");
+    Serial.println(leftMotor.getStepCount());
+
+    Serial.print("rightSteps: ");
+    Serial.println(rightMotor.getStepCount());
+
     Serial.println("----------------------");
 }
 
@@ -2297,6 +2375,7 @@ void handleCommand(String cmd) {
     }
 
     if (cmd == "S" || cmd == "STOP") {
+        velocityTestActive = false;
         navEnabled = false;
         navState = NAV_IDLE;
         alignEnabled = false;
@@ -2317,7 +2396,48 @@ void handleCommand(String cmd) {
         return;
     }
 
+    if (cmd.startsWith("TEST VEL ")) {
+        char testBuffer[80];
+        cmd.toCharArray(testBuffer, sizeof(testBuffer));
+
+        float testV = 0.0f;
+        float testW = 0.0f;
+        unsigned long testDurationMs = 0;
+        int parsed = sscanf(
+            testBuffer,
+            "TEST VEL %f %f %lu",
+            &testV,
+            &testW,
+            &testDurationMs
+        );
+
+        if (parsed != 3 || testDurationMs == 0) {
+            Serial.println("Usage: TEST VEL <v> <w> <ms>");
+            return;
+        }
+
+        navEnabled = false;
+        navState = NAV_IDLE;
+        alignEnabled = false;
+        velocityTestStartLeftSteps = leftMotor.getStepCount();
+        velocityTestStartRightSteps = rightMotor.getStepCount();
+        velocityTestStartMs = millis();
+        velocityTestDurationMs = testDurationMs;
+        velocityTestActive = true;
+
+        drive.setRobotVelocity(testV, testW);
+
+        Serial.print("TEST VEL START v=");
+        Serial.print(testV, 4);
+        Serial.print(" w=");
+        Serial.print(testW, 4);
+        Serial.print(" ms=");
+        Serial.println(testDurationMs);
+        return;
+    }
+
     if (cmd == "NAV START") {
+        velocityTestActive = false;
         navEnabled = true;
         currentTagId = NAV_FIRST_TAG_ID;
         expectedNextTagId = NAV_FIRST_TAG_ID + 1;
@@ -2354,6 +2474,7 @@ void handleCommand(String cmd) {
     }
 
     if (cmd == "NAV STOP") {
+        velocityTestActive = false;
         navEnabled = false;
         navState = NAV_IDLE;
         navTagStableStartMs = 0;
@@ -2370,6 +2491,7 @@ void handleCommand(String cmd) {
     }
 
     if (cmd == "NAV RESET") {
+        velocityTestActive = false;
         navEnabled = false;
         navState = NAV_IDLE;
         currentTagId = NAV_FIRST_TAG_ID;
@@ -2740,9 +2862,13 @@ void loop() {
         }
     }
 
-    updateNavigationController();
+    updateVelocityTest();
 
-    if (!(NAV_BYPASS_START_LOCAL_ALIGN && navEnabled)) {
-        updateAlignmentController();
+    if (!velocityTestActive) {
+        updateNavigationController();
+
+        if (!(NAV_BYPASS_START_LOCAL_ALIGN && navEnabled)) {
+            updateAlignmentController();
+        }
     }
 }
