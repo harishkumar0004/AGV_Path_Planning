@@ -47,6 +47,74 @@ constexpr unsigned long X_STEP_SETTLE_MS = 250;
 
 constexpr float TAG_HARD_EDGE_LIMIT = 0.70f;  // stop if abs(x/y) too large
 constexpr unsigned long TAG_TIMEOUT_MS = 600;
+// Pose-based AprilTag alignment
+// Use pose mode for final checkpoint alignment, not for 90 degree route turns.
+
+constexpr float POSE_X_TOL_M = 0.0025f;       // 2.5 mm
+constexpr float POSE_Y_TOL_M = 0.0025f;       // 2.5 mm
+constexpr float POSE_X_SAFE_M = 0.0080f;      // 8 mm
+constexpr float POSE_Y_SAFE_M = 0.0080f;      // 8 mm
+constexpr float POSE_YAW_TOL_DEG = 1.0f;
+constexpr float POSE_ROUGH_YAW_TOL_DEG = 8.0f;
+constexpr float POSE_LOCAL_UNSAFE_M = 0.015f;
+
+constexpr float K_POSE_Y = 0.60f;             // m/s per meter
+constexpr float V_POSE_MAX = 0.006f;
+
+constexpr float K_POSE_YAW = 0.008f;
+constexpr float W_POSE_MAX = 0.06f;
+
+constexpr float K_POSE_YAW_FINAL = 0.004f;
+constexpr float W_POSE_FINAL_MAX = 0.04f;
+
+constexpr float POSE_X_STEP_THETA_DEG = 4.0f;
+constexpr float K_POSE_X_STEP_YAW = 0.008f;
+constexpr float W_POSE_X_STEP_MAX = 0.04f;
+constexpr float V_POSE_X_STEP = 0.002f;
+constexpr unsigned long POSE_X_STEP_CREEP_MS = 150;
+constexpr unsigned long POSE_X_STEP_SETTLE_MS = 250;
+constexpr float POSE_X_STEP_IMPROVE_M = 0.0010f;
+
+// Blended pose tracking alignment
+
+constexpr float POSE_TRACK_XY_TOL_M = 0.0025f;
+constexpr float POSE_TRACK_YAW_TOL_DEG = 1.0f;
+
+constexpr float POSE_TRACK_LOOKAHEAD_M = 0.08f;
+
+constexpr float K_POSE_TRACK_Y = 0.50f;
+constexpr float K_POSE_TRACK_W = 0.006f;
+
+constexpr float V_POSE_TRACK_MAX = 0.004f;
+constexpr float W_POSE_TRACK_MAX = 0.035f;
+
+constexpr float POSE_TRACK_UNSAFE_X_M = 0.018f;
+constexpr float POSE_TRACK_UNSAFE_Y_M = 0.018f;
+constexpr float POSE_TRACK_UNSAFE_YAW_DEG = 30.0f;
+
+// Observe-plan-act geometric pose alignment
+
+constexpr float POSE_GEO_XY_TOL_M = 0.0025f;          // 2.5 mm
+constexpr float POSE_GEO_YAW_TOL_DEG = 1.0f;
+
+constexpr float POSE_GEO_UNSAFE_X_M = 0.018f;
+constexpr float POSE_GEO_UNSAFE_Y_M = 0.018f;
+constexpr float POSE_GEO_UNSAFE_YAW_DEG = 30.0f;
+
+constexpr float POSE_GEO_MIN_DIST_M = 0.0015f;
+constexpr float POSE_GEO_MAX_STEP_DIST_M = 0.0030f;   // 3 mm per observation cycle
+
+constexpr float POSE_GEO_MAX_TURN_DEG = 5.0f;
+constexpr float POSE_GEO_MIN_TURN_DEG = 1.0f;
+
+constexpr float POSE_GEO_TURN_KW = 0.010f;
+constexpr float POSE_GEO_TURN_W_MAX = 0.035f;
+
+constexpr float POSE_GEO_CREEP_V = 0.0020f;
+constexpr unsigned long POSE_GEO_SETTLE_MS = 250;
+
+constexpr float POSE_GEO_FINAL_YAW_KW = 0.004f;
+constexpr float POSE_GEO_FINAL_YAW_W_MAX = 0.025f;
 
 // ESP32 motor timer
 // 20 us interrupt = 50 kHz timer rate

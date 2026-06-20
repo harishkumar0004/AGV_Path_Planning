@@ -49,9 +49,49 @@ struct TagData {
     unsigned long lastUpdateMs = 0;
 };
 
+struct PoseData {
+    bool visible = false;
+    int id = -1;
+    float xM = 0.0f;
+    float yM = 0.0f;
+    float yawDeg = 0.0f;
+    unsigned long lastUpdateMs = 0;
+};
+
 TagData tag;
+PoseData pose;
+
+enum AlignInputMode {
+    ALIGN_INPUT_PIXEL,
+    ALIGN_INPUT_POSE,
+    ALIGN_INPUT_POSE_TRACK,
+    ALIGN_INPUT_POSE_GEOMETRIC
+};
+
+AlignInputMode alignInputMode = ALIGN_INPUT_PIXEL;
 
 bool alignEnabled = false;
+
+enum PoseGeoState {
+    PG_OBSERVE,
+    PG_TURN,
+    PG_CREEP,
+    PG_SETTLE,
+    PG_FINAL_YAW,
+    PG_ALIGNED,
+    PG_LOST,
+    PG_UNSAFE
+};
+
+PoseGeoState pgState = PG_OBSERVE;
+unsigned long pgStateStartMs = 0;
+float pgTurnDeg = 0.0f;
+float pgMoveM = 0.0f;
+float pgMoveDir = 1.0f;
+unsigned long pgTurnMs = 0;
+unsigned long pgCreepMs = 0;
+float pgTargetAngleDeg = 0.0f;
+unsigned long lastPoseGeoPrintMs = 0;
 
 enum AlignState {
     WAIT_TAG,
@@ -74,6 +114,12 @@ float yBeforeStep = 0.0f;
 int xStepDirection = 1;
 bool xStepDirectionValid = false;
 unsigned long stateStartMs = 0;
+
+float poseXBeforeStepM = 0.0f;
+float poseYBeforeStepM = 0.0f;
+int poseXStepDirection = 1;
+bool poseXStepDirectionValid = false;
+unsigned long poseStateStartMs = 0;
 
 String inputLine = "";
 String lastRobotCommand = "STOP";
@@ -166,6 +212,12 @@ float clampFloat(float value, float minValue, float maxValue) {
     return value;
 }
 
+float signFloat(float value) {
+    if (value > 0.0f) return 1.0f;
+    if (value < 0.0f) return -1.0f;
+    return 0.0f;
+}
+
 const char* alignStateName(AlignState state) {
     switch (state) {
         case WAIT_TAG: return "WAIT_TAG";
@@ -187,6 +239,34 @@ bool isTagTimedOut() {
     return tag.visible && (millis() - tag.lastUpdateMs > TAG_TIMEOUT_MS);
 }
 
+bool isPoseTimedOut() {
+    return pose.visible && (millis() - pose.lastUpdateMs > TAG_TIMEOUT_MS);
+}
+
+const char* alignInputModeName() {
+    switch (alignInputMode) {
+        case ALIGN_INPUT_PIXEL: return "PIXEL";
+        case ALIGN_INPUT_POSE: return "POSE";
+        case ALIGN_INPUT_POSE_TRACK: return "TRACK";
+        case ALIGN_INPUT_POSE_GEOMETRIC: return "GEOMETRIC";
+        default: return "UNKNOWN";
+    }
+}
+
+const char* poseGeoStateName(PoseGeoState state) {
+    switch (state) {
+        case PG_OBSERVE: return "OBSERVE";
+        case PG_TURN: return "TURN";
+        case PG_CREEP: return "CREEP";
+        case PG_SETTLE: return "SETTLE";
+        case PG_FINAL_YAW: return "FINAL_YAW";
+        case PG_ALIGNED: return "ALIGNED";
+        case PG_LOST: return "LOST";
+        case PG_UNSAFE: return "UNSAFE";
+        default: return "UNKNOWN";
+    }
+}
+
 bool isTagNearEdge() {
     return fabs(tag.xNorm) > TAG_HARD_EDGE_LIMIT || fabs(tag.yNorm) > TAG_HARD_EDGE_LIMIT;
 }
@@ -197,6 +277,14 @@ void resetXStepState() {
     xStepDirection = 1;
     xStepDirectionValid = false;
     stateStartMs = 0;
+}
+
+void resetPoseXStepState() {
+    poseXBeforeStepM = 0.0f;
+    poseYBeforeStepM = 0.0f;
+    poseXStepDirection = 1;
+    poseXStepDirectionValid = false;
+    poseStateStartMs = 0;
 }
 
 // =====================================================
@@ -234,7 +322,7 @@ void printAlignBrief(float v, float w) {
     Serial.println(w, 4);
 }
 
-void updateAlignmentController() {
+void updatePixelAlignmentController() {
     // Important:
     // Do NOT call drive.stop() continuously when align is OFF.
     // Otherwise manual commands like F 1, CW 1 will immediately stop.
@@ -456,6 +544,545 @@ void updateAlignmentController() {
     printAlignBrief(0.0f, 0.0f);
 }
 
+
+void printPoseAlignBrief(float v, float w) {
+    unsigned long now = millis();
+
+    if (now - lastAlignPrintMs < 300) {
+        return;
+    }
+
+    lastAlignPrintMs = now;
+
+    Serial.print("POSE_ALIGN ");
+    Serial.print(alignStateName(alignState));
+    Serial.print(" id=");
+    Serial.print(pose.id);
+    Serial.print(" xM=");
+    Serial.print(pose.xM, 4);
+    Serial.print(" yM=");
+    Serial.print(pose.yM, 4);
+    Serial.print(" yaw=");
+    Serial.print(pose.yawDeg, 2);
+    Serial.print(" xBeforeM=");
+    Serial.print(poseXBeforeStepM, 4);
+    Serial.print(" yBeforeM=");
+    Serial.print(poseYBeforeStepM, 4);
+    Serial.print(" xStepDir=");
+    Serial.print(poseXStepDirection);
+    Serial.print(" v=");
+    Serial.print(v, 4);
+    Serial.print(" w=");
+    Serial.println(w, 4);
+}
+
+void stopPoseAlignmentAsLost(const String& command) {
+    drive.stop();
+    lastAlignV = 999.0f;
+    lastAlignW = 999.0f;
+    resetPoseXStepState();
+    alignState = LOST_TAG;
+    lastRobotCommand = command;
+    printPoseAlignBrief(0.0f, 0.0f);
+}
+
+void updatePoseAlignmentController() {
+    if (!alignEnabled) {
+        return;
+    }
+
+    unsigned long now = millis();
+
+    if (now - lastAlignControlMs < ALIGN_CONTROL_PERIOD_MS) {
+        return;
+    }
+
+    lastAlignControlMs = now;
+
+    if (!pose.visible || isPoseTimedOut()) {
+        stopPoseAlignmentAsLost("ALIGN_STOP");
+        return;
+    }
+
+    if (fabs(pose.xM) > POSE_LOCAL_UNSAFE_M || fabs(pose.yM) > POSE_LOCAL_UNSAFE_M) {
+        stopPoseAlignmentAsLost("HARD_EDGE_STOP");
+        return;
+    }
+
+    float v = 0.0f;
+    float w = 0.0f;
+
+    float yawControl = THETA_SIGN * pose.yawDeg;
+    float xControl = X_SIGN * pose.xM;
+    float yControl = Y_SIGN * pose.yM;
+
+    bool isXStepState =
+        alignState == X_STEP_ROTATE ||
+        alignState == X_STEP_CREEP ||
+        alignState == X_STEP_STOP ||
+        alignState == X_STEP_EVALUATE;
+
+    if (isXStepState && fabs(pose.yM) > POSE_Y_SAFE_M) {
+        drive.stop();
+        lastAlignV = 999.0f;
+        lastAlignW = 999.0f;
+        alignState = CENTER_Y_SAFE;
+        lastRobotCommand = "CENTER_Y_SAFE";
+        printPoseAlignBrief(0.0f, 0.0f);
+        return;
+    }
+
+    if (alignState == X_STEP_ROTATE) {
+        float targetThetaDeg = poseXStepDirection * POSE_X_STEP_THETA_DEG;
+        float thetaError = targetThetaDeg - pose.yawDeg;
+
+        if (fabs(thetaError) > POSE_YAW_TOL_DEG) {
+            v = 0.0f;
+            w = K_POSE_X_STEP_YAW * thetaError;
+            w = clampFloat(w, -W_POSE_X_STEP_MAX, W_POSE_X_STEP_MAX);
+
+            lastRobotCommand = "X_STEP_ROTATE";
+            sendAlignVelocity(v, w);
+            printPoseAlignBrief(v, w);
+            return;
+        }
+
+        drive.stop();
+        lastAlignV = 999.0f;
+        lastAlignW = 999.0f;
+        poseStateStartMs = now;
+        alignState = X_STEP_CREEP;
+        lastRobotCommand = "X_STEP_STOP";
+        printPoseAlignBrief(0.0f, 0.0f);
+        return;
+    }
+
+    if (alignState == X_STEP_CREEP) {
+        if (now - poseStateStartMs < POSE_X_STEP_CREEP_MS) {
+            v = V_POSE_X_STEP;
+            w = 0.0f;
+
+            lastRobotCommand = "X_STEP_CREEP";
+            sendAlignVelocity(v, w);
+            printPoseAlignBrief(v, w);
+            return;
+        }
+
+        drive.stop();
+        lastAlignV = 999.0f;
+        lastAlignW = 999.0f;
+        poseStateStartMs = now;
+        alignState = X_STEP_STOP;
+        lastRobotCommand = "X_STEP_STOP";
+        printPoseAlignBrief(0.0f, 0.0f);
+        return;
+    }
+
+    if (alignState == X_STEP_STOP) {
+        drive.stop();
+        lastAlignV = 999.0f;
+        lastAlignW = 999.0f;
+        lastRobotCommand = "X_STEP_STOP";
+
+        if (now - poseStateStartMs >= POSE_X_STEP_SETTLE_MS) {
+            alignState = X_STEP_EVALUATE;
+        }
+
+        printPoseAlignBrief(0.0f, 0.0f);
+        return;
+    }
+
+    if (alignState == X_STEP_EVALUATE) {
+        bool improved = fabs(pose.xM) < fabs(poseXBeforeStepM) - POSE_X_STEP_IMPROVE_M;
+
+        if (!improved) {
+            poseXStepDirection = -poseXStepDirection;
+        }
+
+        alignState = WAIT_TAG;
+        lastRobotCommand = "X_STEP_EVALUATE";
+        printPoseAlignBrief(0.0f, 0.0f);
+    }
+
+    if (fabs(yawControl) > POSE_ROUGH_YAW_TOL_DEG) {
+        alignState = ROUGH_YAW;
+
+        v = 0.0f;
+        w = K_POSE_YAW * yawControl;
+        w = clampFloat(w, -W_POSE_MAX, W_POSE_MAX);
+
+        if (w > 0.0f) {
+            lastRobotCommand = "ROUGH_YAW_CW";
+        } else {
+            lastRobotCommand = "ROUGH_YAW_CCW";
+        }
+        sendAlignVelocity(v, w);
+        printPoseAlignBrief(v, w);
+        return;
+    }
+
+    if (fabs(pose.yM) > POSE_Y_SAFE_M) {
+        alignState = CENTER_Y_SAFE;
+
+        v = K_POSE_Y * yControl;
+        v = clampFloat(v, -V_POSE_MAX, V_POSE_MAX);
+        w = 0.0f;
+
+        lastRobotCommand = "CENTER_Y_SAFE";
+        sendAlignVelocity(v, w);
+        printPoseAlignBrief(v, w);
+        return;
+    }
+
+    if (fabs(pose.xM) > POSE_X_TOL_M) {
+        poseXBeforeStepM = pose.xM;
+        poseYBeforeStepM = pose.yM;
+
+        if (!poseXStepDirectionValid) {
+            if (xControl > 0.0f) {
+                poseXStepDirection = 1;
+            } else {
+                poseXStepDirection = -1;
+            }
+            poseXStepDirectionValid = true;
+        }
+
+        poseStateStartMs = now;
+        alignState = X_STEP_ROTATE;
+        lastRobotCommand = "X_STEP_ROTATE";
+        printPoseAlignBrief(0.0f, 0.0f);
+        return;
+    }
+
+    if (fabs(pose.yM) > POSE_Y_TOL_M) {
+        alignState = FINAL_Y;
+
+        v = K_POSE_Y * yControl;
+        v = clampFloat(v, -V_POSE_MAX, V_POSE_MAX);
+        w = 0.0f;
+
+        lastRobotCommand = "FINAL_Y";
+        sendAlignVelocity(v, w);
+        printPoseAlignBrief(v, w);
+        return;
+    }
+
+    if (fabs(yawControl) > POSE_YAW_TOL_DEG) {
+        alignState = FINAL_YAW;
+
+        v = 0.0f;
+        w = K_POSE_YAW_FINAL * yawControl;
+        w = clampFloat(w, -W_POSE_FINAL_MAX, W_POSE_FINAL_MAX);
+
+        lastRobotCommand = "FINAL_YAW";
+        sendAlignVelocity(v, w);
+        printPoseAlignBrief(v, w);
+        return;
+    }
+
+    poseXStepDirectionValid = false;
+    alignState = ALIGNED_STOP;
+    lastRobotCommand = "ALIGN_STOP";
+
+    drive.stop();
+    lastAlignV = 999.0f;
+    lastAlignW = 999.0f;
+
+    printPoseAlignBrief(0.0f, 0.0f);
+}
+
+void updatePoseTrackController() {
+    if (!alignEnabled) {
+        drive.stop();
+        return;
+    }
+
+    if (!pose.visible || isPoseTimedOut()) {
+        drive.stop();
+        Serial.println("POSE_TRACK LOST_OR_TIMEOUT");
+        return;
+    }
+
+    float x = pose.xM;
+    float y = pose.yM;
+    float yaw = pose.yawDeg;
+
+    float absX = fabs(x);
+    float absY = fabs(y);
+    float absYaw = fabs(yaw);
+
+    // Hard safety only. Tracking itself blends all three pose errors.
+    if (absX > POSE_TRACK_UNSAFE_X_M ||
+        absY > POSE_TRACK_UNSAFE_Y_M ||
+        absYaw > POSE_TRACK_UNSAFE_YAW_DEG) {
+        drive.stop();
+        Serial.println("POSE_TRACK UNSAFE_OUT_OF_RANGE");
+        return;
+    }
+
+    if (absX < POSE_TRACK_XY_TOL_M &&
+        absY < POSE_TRACK_XY_TOL_M &&
+        absYaw < POSE_TRACK_YAW_TOL_DEG) {
+        drive.stop();
+        Serial.print("POSE_TRACK ALIGNED xM=");
+        Serial.print(x, 4);
+        Serial.print(" yM=");
+        Serial.print(y, 4);
+        Serial.print(" yaw=");
+        Serial.println(yaw, 2);
+        return;
+    }
+
+    float xToYawDeg = atan2(x, POSE_TRACK_LOOKAHEAD_M) * 180.0f / PI;
+    float yawCmdDeg = THETA_SIGN * yaw + xToYawDeg;
+
+    float v = K_POSE_TRACK_Y * Y_SIGN * y;
+    float w = K_POSE_TRACK_W * yawCmdDeg;
+
+    v = clampFloat(v, -V_POSE_TRACK_MAX, V_POSE_TRACK_MAX);
+    w = clampFloat(w, -W_POSE_TRACK_MAX, W_POSE_TRACK_MAX);
+
+    drive.setRobotVelocity(v, w);
+
+    Serial.print("POSE_TRACK xM=");
+    Serial.print(x, 4);
+    Serial.print(" yM=");
+    Serial.print(y, 4);
+    Serial.print(" yaw=");
+    Serial.print(yaw, 2);
+    Serial.print(" xToYaw=");
+    Serial.print(xToYawDeg, 2);
+    Serial.print(" yawCmd=");
+    Serial.print(yawCmdDeg, 2);
+    Serial.print(" v=");
+    Serial.print(v, 4);
+    Serial.print(" w=");
+    Serial.println(w, 4);
+}
+
+void printPoseGeoEvent(const char* event) {
+    unsigned long now = millis();
+    if (now - lastPoseGeoPrintMs < 200) {
+        return;
+    }
+    lastPoseGeoPrintMs = now;
+
+    Serial.print("POSE_GEO ");
+    Serial.println(event);
+}
+
+void printPoseGeoBrief(
+    float x,
+    float y,
+    float yaw,
+    float dist,
+    float v,
+    float w
+) {
+    unsigned long now = millis();
+    if (now - lastPoseGeoPrintMs < 200) {
+        return;
+    }
+    lastPoseGeoPrintMs = now;
+
+    Serial.print("POSE_GEO state=");
+    Serial.print(poseGeoStateName(pgState));
+    Serial.print(" xM=");
+    Serial.print(x, 4);
+    Serial.print(" yM=");
+    Serial.print(y, 4);
+    Serial.print(" yaw=");
+    Serial.print(yaw, 2);
+    Serial.print(" dist=");
+    Serial.print(dist, 4);
+    Serial.print(" targetAngle=");
+    Serial.print(pgTargetAngleDeg, 2);
+    Serial.print(" turnDeg=");
+    Serial.print(pgTurnDeg, 2);
+    Serial.print(" moveM=");
+    Serial.print(pgMoveM, 4);
+    Serial.print(" turnMs=");
+    Serial.print(pgTurnMs);
+    Serial.print(" creepMs=");
+    Serial.print(pgCreepMs);
+    Serial.print(" v=");
+    Serial.print(v, 4);
+    Serial.print(" w=");
+    Serial.println(w, 4);
+}
+
+void updatePoseGeometricController() {
+    if (!alignEnabled) {
+        drive.stop();
+        pgState = PG_OBSERVE;
+        return;
+    }
+
+    float x = pose.xM;
+    float y = pose.yM;
+    float yaw = pose.yawDeg;
+    float dist = sqrt(x * x + y * y);
+
+    if (!pose.visible || isPoseTimedOut()) {
+        drive.stop();
+        pgState = PG_LOST;
+        printPoseGeoEvent("LOST_OR_TIMEOUT");
+        return;
+    }
+
+    float absX = fabs(x);
+    float absY = fabs(y);
+    float absYaw = fabs(yaw);
+
+    if (absX > POSE_GEO_UNSAFE_X_M ||
+        absY > POSE_GEO_UNSAFE_Y_M ||
+        absYaw > POSE_GEO_UNSAFE_YAW_DEG) {
+        drive.stop();
+        pgState = PG_UNSAFE;
+        printPoseGeoEvent("UNSAFE_OUT_OF_RANGE");
+        return;
+    }
+
+    unsigned long now = millis();
+    float v = 0.0f;
+    float w = 0.0f;
+
+    switch (pgState) {
+        case PG_OBSERVE:
+            drive.stop();
+
+            if (absX < POSE_GEO_XY_TOL_M && absY < POSE_GEO_XY_TOL_M) {
+                pgState = absYaw < POSE_GEO_YAW_TOL_DEG ? PG_ALIGNED : PG_FINAL_YAW;
+                pgStateStartMs = now;
+                break;
+            }
+
+            pgTargetAngleDeg = atan2(x, y) * 180.0f / PI;
+            pgTurnDeg = clampFloat(
+                pgTargetAngleDeg,
+                -POSE_GEO_MAX_TURN_DEG,
+                POSE_GEO_MAX_TURN_DEG
+            );
+
+            if (fabs(pgTurnDeg) < POSE_GEO_MIN_TURN_DEG &&
+                absX > POSE_GEO_XY_TOL_M) {
+                float turnSign = signFloat(pgTurnDeg == 0.0f ? x : pgTurnDeg);
+                pgTurnDeg = turnSign * POSE_GEO_MIN_TURN_DEG;
+            }
+
+            pgMoveM = clampFloat(dist, 0.0f, POSE_GEO_MAX_STEP_DIST_M);
+            pgMoveDir = y >= 0.0f ? 1.0f : -1.0f;
+            pgTurnMs = constrain(
+                (unsigned long)(fabs(pgTurnDeg) * 25.0f),
+                60UL,
+                220UL
+            );
+            pgCreepMs = constrain(
+                (unsigned long)((pgMoveM / POSE_GEO_CREEP_V) * 1000.0f),
+                60UL,
+                180UL
+            );
+            pgState = PG_TURN;
+            pgStateStartMs = now;
+            break;
+
+        case PG_TURN:
+            v = 0.0f;
+            w = POSE_GEO_TURN_KW * pgTurnDeg;
+            w = clampFloat(w, -POSE_GEO_TURN_W_MAX, POSE_GEO_TURN_W_MAX);
+            drive.setRobotVelocity(v, w);
+
+            if (now - pgStateStartMs >= pgTurnMs) {
+                drive.stop();
+                v = 0.0f;
+                w = 0.0f;
+                pgState = PG_CREEP;
+                pgStateStartMs = now;
+            }
+            break;
+
+        case PG_CREEP:
+            v = pgMoveDir * POSE_GEO_CREEP_V;
+            w = 0.0f;
+            drive.setRobotVelocity(v, w);
+
+            if (now - pgStateStartMs >= pgCreepMs) {
+                drive.stop();
+                v = 0.0f;
+                pgState = PG_SETTLE;
+                pgStateStartMs = now;
+            }
+            break;
+
+        case PG_SETTLE:
+            drive.stop();
+            if (now - pgStateStartMs >= POSE_GEO_SETTLE_MS) {
+                pgState = PG_OBSERVE;
+                pgStateStartMs = now;
+            }
+            break;
+
+        case PG_FINAL_YAW:
+            if (absX > POSE_GEO_XY_TOL_M || absY > POSE_GEO_XY_TOL_M) {
+                drive.stop();
+                pgState = PG_OBSERVE;
+                pgStateStartMs = now;
+                break;
+            }
+
+            if (absYaw < POSE_GEO_YAW_TOL_DEG) {
+                drive.stop();
+                pgState = PG_OBSERVE;
+                pgStateStartMs = now;
+                break;
+            }
+
+            v = 0.0f;
+            w = POSE_GEO_FINAL_YAW_KW * THETA_SIGN * yaw;
+            w = clampFloat(w, -POSE_GEO_FINAL_YAW_W_MAX, POSE_GEO_FINAL_YAW_W_MAX);
+            drive.setRobotVelocity(v, w);
+            break;
+
+        case PG_ALIGNED:
+            drive.stop();
+            if (absX >= POSE_GEO_XY_TOL_M ||
+                absY >= POSE_GEO_XY_TOL_M ||
+                absYaw >= POSE_GEO_YAW_TOL_DEG) {
+                pgState = PG_OBSERVE;
+                pgStateStartMs = now;
+            } else {
+                printPoseGeoEvent("ALIGNED");
+            }
+            break;
+
+        case PG_LOST:
+        case PG_UNSAFE:
+            drive.stop();
+            break;
+    }
+
+    printPoseGeoBrief(x, y, yaw, dist, v, w);
+}
+
+void updateAlignmentController() {
+    if (alignInputMode == ALIGN_INPUT_POSE_GEOMETRIC) {
+        updatePoseGeometricController();
+        return;
+    }
+
+    if (alignInputMode == ALIGN_INPUT_POSE_TRACK) {
+        updatePoseTrackController();
+        return;
+    }
+
+    if (alignInputMode == ALIGN_INPUT_POSE) {
+        updatePoseAlignmentController();
+        return;
+    }
+
+    updatePixelAlignmentController();
+}
+
 // =====================================================
 // Printing
 // =====================================================
@@ -483,7 +1110,12 @@ void printHelp() {
     Serial.println("AprilTag alignment commands from Raspberry Pi:");
     Serial.println("  ALIGN ON");
     Serial.println("  ALIGN OFF");
+    Serial.println("  ALIGN MODE PIXEL");
+    Serial.println("  ALIGN MODE POSE");
+    Serial.println("  ALIGN MODE TRACK");
+    Serial.println("  ALIGN MODE GEOMETRIC");
     Serial.println("  TAG <id> <x_norm> <y_norm> <theta_deg>");
+    Serial.println("  TAGPOSE <id> <x_m> <y_m> <yaw_deg>");
     Serial.println("  TAG LOST");
     Serial.println();
     Serial.println("Other:");
@@ -513,6 +1145,9 @@ void printStatus() {
     Serial.print("Align state: ");
     Serial.println(alignStateName(alignState));
 
+    Serial.print("Align input mode: ");
+    Serial.println(alignInputModeName());
+
     Serial.print("Tag visible: ");
     Serial.println(tag.visible ? "YES" : "NO");
 
@@ -530,6 +1165,23 @@ void printStatus() {
 
     Serial.print("thetaDeg: ");
     Serial.println(tag.thetaDeg, 2);
+
+    Serial.println();
+
+    Serial.print("Pose visible: ");
+    Serial.println(pose.visible ? "YES" : "NO");
+
+    Serial.print("Pose id: ");
+    Serial.println(pose.id);
+
+    Serial.print("pose xM: ");
+    Serial.println(pose.xM, 4);
+
+    Serial.print("pose yM: ");
+    Serial.println(pose.yM, 4);
+
+    Serial.print("pose yawDeg: ");
+    Serial.println(pose.yawDeg, 2);
 
     Serial.println();
 
@@ -607,12 +1259,14 @@ bool handleTagCommand(const String& cmd) {
     if (cmd == "TAG LOST") {
         tag.visible = false;
         tag.nearEdge = false;
+        pose.visible = false;
 
         if (alignEnabled) {
             drive.stop();
             lastAlignV = 999.0f;
             lastAlignW = 999.0f;
             resetXStepState();
+            resetPoseXStepState();
             alignState = LOST_TAG;
             lastRobotCommand = "ALIGN_STOP";
         }
@@ -633,6 +1287,25 @@ bool handleTagCommand(const String& cmd) {
     int count = sscanf(buffer, "%11s %d %f %f %f", word, &id, &x, &y, &theta);
 
     String first = String(word);
+
+    if (first == "TAGPOSE" && count == 5) {
+        pose.visible = true;
+        pose.id = id;
+        pose.xM = x;
+        pose.yM = y;
+        pose.yawDeg = theta;
+        pose.lastUpdateMs = millis();
+
+        Serial.print("TAGPOSE RECEIVED id=");
+        Serial.print(pose.id);
+        Serial.print(" xM=");
+        Serial.print(pose.xM, 4);
+        Serial.print(" yM=");
+        Serial.print(pose.yM, 4);
+        Serial.print(" yawDeg=");
+        Serial.println(pose.yawDeg, 2);
+        return true;
+    }
 
     if (first == "TAG" && count == 5) {
         tag.visible = true;
@@ -679,6 +1352,7 @@ void handleCommand(String cmd) {
         lastAlignV = 999.0f;
         lastAlignW = 999.0f;
         resetXStepState();
+        resetPoseXStepState();
         alignState = WAIT_TAG;
         lastRobotCommand = "STOP";
         Serial.println("STOP + ALIGN DISABLED");
@@ -691,11 +1365,69 @@ void handleCommand(String cmd) {
         return;
     }
 
+    if (cmd == "ALIGN MODE PIXEL") {
+        alignInputMode = ALIGN_INPUT_PIXEL;
+        lastAlignV = 999.0f;
+        lastAlignW = 999.0f;
+        resetXStepState();
+        resetPoseXStepState();
+        alignState = WAIT_TAG;
+        lastRobotCommand = "ALIGN_STOP";
+        Serial.println("ALIGN INPUT MODE: PIXEL");
+        return;
+    }
+
+    if (cmd == "ALIGN MODE POSE") {
+        alignInputMode = ALIGN_INPUT_POSE;
+        lastAlignV = 999.0f;
+        lastAlignW = 999.0f;
+        resetXStepState();
+        resetPoseXStepState();
+        alignState = WAIT_TAG;
+        lastRobotCommand = "ALIGN_STOP";
+        Serial.println("ALIGN INPUT MODE: POSE");
+        return;
+    }
+
+    if (cmd == "ALIGN MODE TRACK") {
+        alignInputMode = ALIGN_INPUT_POSE_TRACK;
+        lastAlignV = 999.0f;
+        lastAlignW = 999.0f;
+        resetXStepState();
+        resetPoseXStepState();
+        alignState = WAIT_TAG;
+        lastRobotCommand = "ALIGN_STOP";
+        Serial.println("ALIGN INPUT MODE: TRACK");
+        return;
+    }
+
+    if (cmd == "ALIGN MODE GEOMETRIC") {
+        alignInputMode = ALIGN_INPUT_POSE_GEOMETRIC;
+        drive.stop();
+        lastAlignV = 999.0f;
+        lastAlignW = 999.0f;
+        resetXStepState();
+        resetPoseXStepState();
+        pgState = PG_OBSERVE;
+        pgStateStartMs = millis();
+        pgTurnDeg = 0.0f;
+        pgMoveM = 0.0f;
+        pgMoveDir = 1.0f;
+        pgTurnMs = 0;
+        pgCreepMs = 0;
+        pgTargetAngleDeg = 0.0f;
+        alignState = WAIT_TAG;
+        lastRobotCommand = "ALIGN_STOP";
+        Serial.println("ALIGN INPUT MODE: GEOMETRIC");
+        return;
+    }
+
     if (cmd == "ALIGN ON") {
         alignEnabled = true;
         lastAlignV = 999.0f;
         lastAlignW = 999.0f;
         resetXStepState();
+        resetPoseXStepState();
         alignState = WAIT_TAG;
         lastRobotCommand = "ALIGN_STOP";
         Serial.println("ALIGN ENABLED");
@@ -708,6 +1440,7 @@ void handleCommand(String cmd) {
         lastAlignV = 999.0f;
         lastAlignW = 999.0f;
         resetXStepState();
+        resetPoseXStepState();
         alignState = WAIT_TAG;
         lastRobotCommand = "STOP";
         Serial.println("ALIGN DISABLED + STOP");
